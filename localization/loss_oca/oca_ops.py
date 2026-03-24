@@ -1,8 +1,10 @@
 ﻿#until before loss calculation
- 
+#총 8개 : 1) compute_audio_visual_scores, 2) compute_depth_prior, 3) build_soft_masks, 4) masked_token_pool
+        #5) build_text_anchor, 6) foreground_oca_loss, 7) background_oca_loss, 8) OCAloss.forward
+
+
 
 #1) compute_audio_visual_scores, 2) compute_depth_prior, 3) build_soft_masks, 4) masked_token_pool
-
 
 import torch
 import torch.nn as nn
