@@ -10,6 +10,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+#%%
 
 def compute_audio_visual_scores(
     vision_tokens: torch.Tensor,
@@ -57,6 +58,7 @@ def compute_audio_visual_scores(
 
     return s_a
 
+#%%
 
 def compute_depth_prior(
     vision_tokens: torch.Tensor,
@@ -106,6 +108,7 @@ def compute_depth_prior(
 
     return s_d
 
+#%%
 
 def build_soft_masks(
     audio_scores: torch.Tensor,
@@ -148,6 +151,7 @@ def build_soft_masks(
 
     return fused_scores, m_fg, m_bg
 
+#%%
 
 def masked_token_pool(
     tokens: torch.Tensor,
@@ -190,6 +194,7 @@ def masked_token_pool(
 
 # 5) build_text_anchor, 6) foreground_oca_loss, 7) background_oca_loss, 8) OCAloss.forward
 
+#%%
 
 import torch
 import torch.nn.functional as F
@@ -243,6 +248,7 @@ def build_text_anchor(
 
     return fg_anchor, bg_anchor
 
+#%%
 
 def foreground_oca_loss(
     fg_region: torch.Tensor,
@@ -307,6 +313,7 @@ def foreground_oca_loss(
     loss = -torch.log(pos / (pos + hard_neg + soft_neg + 1e-8))
     return loss.mean()
 
+#%%
 
 def background_oca_loss(
     fg_region: torch.Tensor,
@@ -348,6 +355,7 @@ def background_oca_loss(
     loss = -torch.log(pos / (pos + hard_neg + 1e-8))
     return loss.mean()
 
+#%%
 
 def compute_oca_loss(
     vision_fg: torch.Tensor,

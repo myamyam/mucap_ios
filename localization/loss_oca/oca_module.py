@@ -5,6 +5,7 @@
 import torch
 import torch.nn as nn
 
+#%%
 from oca_ops import (
     compute_audio_visual_scores,
     compute_depth_prior,
@@ -13,6 +14,7 @@ from oca_ops import (
     compute_oca_loss,
 )
 
+#%%
 
 class OCALoss(nn.Module):
     """
@@ -68,7 +70,7 @@ class OCALoss(nn.Module):
         self.temperature = temperature
         self.use_soft_negative = use_soft_negative
 
-    def forward(
+    def forward( #입력 토큰들로부터 score->mask->pool->loss 계산
         self,
         vision_tokens: torch.Tensor,
         audio_tokens: torch.Tensor,

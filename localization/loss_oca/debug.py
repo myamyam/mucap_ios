@@ -9,6 +9,7 @@ import torch
 
 from oca_module import OCALoss
 
+#%%
 
 def print_tensor_stats(name: str, x: torch.Tensor) -> None:
     x_detached = x.detach()
@@ -20,6 +21,7 @@ def print_tensor_stats(name: str, x: torch.Tensor) -> None:
     print(f"  has_nan : {torch.isnan(x_detached).any().item()}")
     print(f"  has_inf : {torch.isinf(x_detached).any().item()}")
 
+#%%
 
 def main():
     torch.manual_seed(42)
