@@ -6,6 +6,8 @@
 
 #1) compute_audio_visual_scores, 2) compute_depth_prior, 3) build_soft_masks, 4) masked_token_pool
 
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -67,13 +69,20 @@ def compute_depth_prior(
     mode: str = "aligned",
 ) -> torch.Tensor:
     """
-    Compute depth prior per visual patch.
+    Compute depth prior per visual patch from depth-token consistency.
+
+    This variant does not use visual-depth token affinity. Instead, each
+    depth patch receives a score based on how consistent its depth embedding is
+    with neighboring depth patches. For square patch grids, consistency is the
+    average cosine similarity to 4-neighbors. For non-square token counts, it
+    falls back to average similarity against the other depth tokens in the
+    sample.
 
     Args:
         vision_tokens: [B, Nv, D]
         depth_tokens:  [B, Nd, D]
-        tau_d: temperature for attention-style reduction
-        mode: one of {"aligned", "attn"}
+        tau_d: kept for API compatibility; not used
+        mode: kept for API compatibility; not used
 
     Returns:
         s_d: [B, Nv]
@@ -87,26 +96,47 @@ def compute_depth_prior(
     if vision_tokens.shape[-1] != depth_tokens.shape[-1]:
         raise ValueError("Embedding dim mismatch between vision_tokens and depth_tokens.")
 
-    v = F.normalize(vision_tokens, dim=-1)   # [B, Nv, D]
-    d = F.normalize(depth_tokens, dim=-1)    # [B, Nd, D]
+    if vision_tokens.shape[1] != depth_tokens.shape[1]:
+        raise ValueError(
+            "Depth consistency prior requires vision_tokens and depth_tokens "
+            "to have the same patch count."
+        )
 
-    if mode == "aligned":
-        if vision_tokens.shape[1] != depth_tokens.shape[1]:
-            raise ValueError(
-                "For mode='aligned', vision_tokens and depth_tokens must have same token count."
-            )
-        # Patch i in vision <-> patch i in depth
-        s_d = (v * d).sum(dim=-1)  # [B, Nv]
+    d = F.normalize(depth_tokens, dim=-1)    # [B, N, D]
+    B, N, D = d.shape
 
-    elif mode == "attn":
-        sim_vd = torch.matmul(v, d.transpose(1, 2))   # [B, Nv, Nd]
-        attn = F.softmax(sim_vd / tau_d, dim=-1)      # [B, Nv, Nd]
-        s_d = (attn * sim_vd).sum(dim=-1)             # [B, Nv]
+    grid_size = int(math.sqrt(N))
 
+    if grid_size * grid_size == N:
+        H = W = grid_size
+        d_grid = d.view(B, H, W, D)
+
+        score_sum = d.new_zeros(B, H, W)
+        score_count = d.new_zeros(B, H, W)
+
+        if H > 1:
+            vertical_sim = (d_grid[:, :-1, :, :] * d_grid[:, 1:, :, :]).sum(dim=-1)
+            score_sum[:, :-1, :] += vertical_sim
+            score_sum[:, 1:, :] += vertical_sim
+            score_count[:, :-1, :] += 1.0
+            score_count[:, 1:, :] += 1.0
+
+        if W > 1:
+            horizontal_sim = (d_grid[:, :, :-1, :] * d_grid[:, :, 1:, :]).sum(dim=-1)
+            score_sum[:, :, :-1] += horizontal_sim
+            score_sum[:, :, 1:] += horizontal_sim
+            score_count[:, :, :-1] += 1.0
+            score_count[:, :, 1:] += 1.0
+
+        consistency = score_sum / score_count.clamp_min(1.0)
+        s_d = consistency.view(B, N)
     else:
-        raise ValueError(f"Unsupported mode: {mode}")
+        sim_dd = torch.matmul(d, d.transpose(1, 2))  # [B, N, N]
+        eye = torch.eye(N, device=d.device, dtype=torch.bool).unsqueeze(0)
+        sim_dd = sim_dd.masked_fill(eye, 0.0)
+        s_d = sim_dd.sum(dim=-1) / max(N - 1, 1)
 
-    return s_d
+    return ((s_d + 1.0) * 0.5).clamp(0.0, 1.0)
 
 #%%
 
@@ -265,9 +295,9 @@ def foreground_oca_loss(
         fg_region:   [B, D] foreground region summary
         bg_region:   [B, D] background region summary
         fg_anchor:   [B, D] foreground text anchor
-        tau_neg:     threshold for filtering soft negatives
+        tau_neg:     kept for API compatibility; not used
         temperature: contrastive temperature
-        use_soft_negative: whether to use batch soft negatives
+        use_soft_negative: kept for API compatibility; not used
 
     Returns:
         loss_frg: scalar
@@ -291,26 +321,7 @@ def foreground_oca_loss(
     hard_neg_logits = (z_bg * r_fg).sum(dim=-1) / temperature # [B]
     hard_neg = torch.exp(hard_neg_logits)                     # [B]
 
-    # Soft negatives: other samples' fg_region against current sample's fg_anchor
-    if use_soft_negative and z_fg.shape[0] > 1:
-        # [B, B] similarities between all fg anchors
-        anchor_sim = torch.matmul(r_fg, r_fg.transpose(0, 1))  # [B, B]
-
-        # [B, B] similarities between all fg regions and all fg anchors
-        cross_sim = torch.matmul(z_fg, r_fg.transpose(0, 1)) / temperature  # [B, B]
-
-        B = z_fg.shape[0]
-        eye = torch.eye(B, device=z_fg.device, dtype=torch.bool)
-
-        # valid negative if j != i and anchor similarity <= tau_neg
-        valid_neg_mask = (~eye) & (anchor_sim <= tau_neg)     # [B, B]
-
-        soft_neg = torch.exp(cross_sim) * valid_neg_mask.float()  # [B, B]
-        soft_neg = soft_neg.sum(dim=0)                        # [B]
-    else:
-        soft_neg = torch.zeros_like(pos)
-
-    loss = -torch.log(pos / (pos + hard_neg + soft_neg + 1e-8))
+    loss = -torch.log(pos / (pos + hard_neg + 1e-8))
     return loss.mean()
 
 #%%
@@ -382,9 +393,9 @@ def compute_oca_loss(
         bg_text_tokens: [B, L, D]
         fuse_depth:     whether to fuse depth summaries into region summaries
         depth_weight:   weight for depth summary fusion
-        tau_neg:        threshold for soft negative filtering
+        tau_neg:        kept for API compatibility; not used
         temperature:    contrastive temperature
-        use_soft_negative: whether to use batch soft negatives in foreground loss
+        use_soft_negative: kept for API compatibility; not used
 
     Returns:
         loss_oca: scalar

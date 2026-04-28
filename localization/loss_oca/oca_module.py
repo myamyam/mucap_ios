@@ -2,6 +2,8 @@
 #class OCAloss, forward 등 두고 내부에서 함수 호출하도록
 #입력 받아서 최종 loss 내보내는 orchestration 담당 
 
+
+
 import torch
 import torch.nn as nn
 
@@ -125,14 +127,14 @@ class OCALoss(nn.Module):
             bg_mask=m_bg,
         )  # [B, D], [B, D]
 
-        # 4) Pool depth tokens into fg/bg summaries
+        # 5) Pool depth tokens into fg/bg summaries
         z_d_fg, z_d_bg = masked_token_pool(
             tokens=depth_tokens,
             fg_mask=m_fg,
             bg_mask=m_bg,
         )  # [B, D], [B, D]
 
-        # 5~8) Text anchor + foreground/background loss + final OCA loss
+        # 6~9) Text anchor + foreground/background loss + final OCA loss
         loss_oca, oca_stats = compute_oca_loss(
             vision_fg=z_v_fg,
             vision_bg=z_v_bg,

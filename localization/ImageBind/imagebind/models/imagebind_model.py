@@ -599,8 +599,8 @@ def _imagebind_forward(self, inputs, return_patch_embeddings=False):
         head_inputs = modality_value["head"]
         modality_value = self.modality_trunks[modality_key](**trunk_inputs)
 
-        if return_patch_embeddings and modality_key in [ModalityType.VISION, ModalityType.AUDIO]:
-            # Keep token-wise embeddings for vision/audio without changing the default API.
+        if return_patch_embeddings and modality_key in [ModalityType.VISION, ModalityType.AUDIO, ModalityType.DEPTH]:
+            # Keep token-wise embeddings for patch-based modalities without changing the default API.
             head = self.modality_heads[modality_key]
             modality_value = modality_value[:, 1:, :]
             modality_value = head[0](modality_value)
