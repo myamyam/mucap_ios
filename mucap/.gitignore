@@ -1,0 +1,15 @@
+__pycache__/
+.vscode/
+*.pyc
+
+pretrained_models
+*.pb
+.idea
+.env
+__spleeter_temp__
+
+dataset
+!dataset/.gitignore
+
+output
+outpu2

@@ -1,0 +1,43 @@
+— Summary of Key Findings —
+1. Repetition of consonants + rhythmic segmentation
+Participants commonly represented rhythm by breaking sounds into units and repeating consonants:
+Examples: “dun-dun,” “da-ra-ra,” “du-ru-du-tta”
+
+2. Vowel changes used to express pitch or duration
+Short vowels indicated short/low sounds (“da-da-da”), while varying vowels expressed rising or rhythmic patterns (“ta-ka-ta-ka,” “ta-ra-ra”).
+
+3. Intentional layering and stress expression
+Spacing or grouping influenced perceived emphasis:
+Examples: “ba-ba-ba-ba” vs. “ba-ba ba-ba”
+
+4. Drum syllables exhibit semi-standardized patterns
+Conventional vocal percussion patterns exist and should be utilized when possible:
+Examples: “kung-chi-tta-chi,” “dung-ku-dung-ku-tta”
+
+5. Structural mapping of transient–resonance concepts
+“dung” corresponds to a low-pitched resonant sound
+“tak/tak” corresponds to a sharp transient attack
+
+6. Strategy for text-based rhythm representation
+Divide syllables based on note values or beats
+Eighth notes → two-syllable repetition (“da-da”)
+Sixteenth notes → fast consonant repetition (“tta-tta-tta-tta”)
+Meaningful rhythmic patterns are grouped
+“ta-ra-ra,” “da-ra-ra-ra”
+
+7. Timbre-based decomposition
+Transient → consonants (percussive hits): t, d, p, ch, tt, tak, ttak
+Resonance → vowels/finals (sustain/aftertone): u, eu, ng, m
+Example: “tak” = transient + resonance combined
+
+8. Distinguishing beats and accents
+Accents can be shown through spacing, repetition, or strong consonants (double consonants):
+Examples: “ppa-ba ppa-ba”, “ppa-ppa-ppa”
+
+9. Role of ‘ㄹ’ — enhances phrasing and rhythmic flow
+When inserted between obstruents, ‘ㄹ’ adds speed, continuity, and phrase connection; it naturally conveys internal motion:
+Examples: “di-ri-da-ra-tta-ra-ttu,” “chi-ri-ti-ri-ta-ra-tta-ra-ra-tu”
+
+10. Role of ‘ㅎ’ — soft attack and airy high-frequency expression
+‘ㅎ’ effectively conveys breathy or soft attack qualities, suitable for representing flutes, clarinets, cymbals, or air-like timbres:
+Examples: “ha,” “hwi,” “hi-ing” — with potential for further refinement.

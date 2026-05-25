@@ -1,0 +1,35 @@
+# Python/build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+*.so
+.ipynb_checkpoints/
+
+# Local environments and secrets
+.venv/
+.env
+.env.*
+!.env.example
+
+# Model checkpoints and downloaded tools
+.checkpoints/
+tools/
+
+# Local input media and generated outputs
+input/
+outputs/
+outputs_csv/
+outputs_bbox_overlay*/
+audio_data/
+raw_visual*_frames*/
+raw_visual*_frames_colored*/
+raw_visual*_frames_coloredbyobject*/
+*.mp4
+*.wav
+*.mp3
+
+# OS/editor noise
+.DS_Store
+Thumbs.db

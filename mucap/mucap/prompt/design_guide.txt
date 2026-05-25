@@ -1,0 +1,40 @@
+- Summary of contents –
+Shared feedback
+1. Consonant repetition + rhythm unit separation
+: "dun-dun," "da-ra-ra," "du-ru-du-da" → break the rhythm into sound units and repeat consonants
+
+2. Express pitch or sustain with vowel changes
+: "da-da-da" (short and low), "da-ra-ra," "ta-ka-ta-ka" (rising and rhythmic)
+
+3. Intentional overlap and emphasis
+: "ba-ba-ba-ba / ba-ba ba-ba" → spacing or emphasis placement can convey different feelings
+
+4. Drum syllables have some fixed patterns
+: "kung-chi-tta-chi," "dung-ku-dung-ku-tta" — when conventional patterns exist, make active use of them
+
+5. Reflect the transient-resonance concept in structure
+: "dung" equals a low-pitched resonance, "ddak/tak" is a sharp transient attack
+
+6. Strategy for turning rhythm units into text
+- Break by number of notes or beats
+: eighth notes → repeat 2 syllables ("da-da"), sixteenth notes → fast consonant repetition ("ta-ta-ta-ta")
+- Group repeating patterns into meaningful units
+: "da-ra-ra," "da-ra-ra-ra"
+
+7. Timbre segmentation elements
+- Transient → consonants (percussive sounds): t, d, p, ch, tt, tak, ddak, etc.
+- Resonance → vowels/final consonants (reverb/afterglow): u, eu, ng, m, etc.
+: "tak" = transient + resonance combined into one syllable
+
+8. How to indicate beat/accent differences
+- Use spaces, repeated expressions, or strong consonants (double consonants)
+: "ppa-ba ppa-ba" (repeat twice), "ppa-ppa-ppa" (emphasis)
+
+9. Role of 'r' – reinforces phrasing and rhythmic feel
+- When 'r' appears between obstruents, it enhances speed and phrase connection.
+- Because 'r' is articulated slightly inside, placing it between obstruents helps express groove or tempo.
+: di-ri-da-ra-tta-ra-tu, chi-ri-ti-ri-ta-ra-tta-ra-ra-tu
+
+10. Role of 'h' – soft attack and airy expression in high registers
+- 'h' suits wind noise, gentle friction sounds, or lingering connections.
+(ha, hwi, hi-ing, etc. → expected to work for clarinet, flute, or cymbal expressions; add more after verification)
