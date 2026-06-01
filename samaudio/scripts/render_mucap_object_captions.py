@@ -1,8 +1,9 @@
-import argparse
+﻿import argparse
 import bisect
 import csv
 import glob
 import json
+import math
 import os
 import re
 import shutil
@@ -36,6 +37,225 @@ class MatchRow:
     is_sounding: bool
     confidence: float
     audio_rms: float
+
+
+@dataclass(frozen=True)
+class CaptionStyle:
+    name: str
+    fill: tuple[int, int, int]
+    stroke_fill: tuple[int, int, int]
+    shadow_fill: tuple[int, int, int, int]
+    accent_fill: tuple[int, int, int, int]
+    font_candidates: tuple[str, ...] = ()
+    font_scale: float = 1.0
+    stroke_scale: float = 1.0
+    shadow_offset: tuple[float, float] = (0.16, 0.18)
+    scale_x: float = 1.0
+    scale_y: float = 1.0
+    shear_x: float = 0.0
+    extrusion_fill: tuple[int, int, int, int] | None = None
+    extrusion_offset: tuple[float, float] = (0.0, 0.0)
+    burst_scale: float = 1.0
+    angle: float = 0.0
+    accent: str = "none"
+
+
+DEFAULT_CAPTION_STYLE = CaptionStyle(
+    name="default",
+    fill=(255, 238, 82),
+    stroke_fill=(2, 35, 76),
+    shadow_fill=(0, 10, 30, 190),
+    accent_fill=(255, 70, 214, 210),
+    font_candidates=(r"C:\Windows\Fonts\malgunbd.ttf",),
+    font_scale=1.08,
+    stroke_scale=1.4,
+    shadow_offset=(0.14, 0.18),
+    angle=-3.0,
+    accent="speed",
+)
+
+CAPTION_STYLE_RULES: list[tuple[re.Pattern[str], CaptionStyle]] = [
+    (
+        re.compile("(\uc73c\uc544\uc545|\uc73c\uc545|\uc544\uc545|\ud06c\uc545|\ud06c\uc559|\uadf8\uc545|\ud5c9|\uc545+)"),
+        CaptionStyle(
+            name="battle_shout",
+            fill=(255, 241, 210),
+            stroke_fill=(84, 8, 18),
+            shadow_fill=(0, 0, 0, 230),
+            accent_fill=(218, 24, 42, 235),
+            font_candidates=(
+                str(ROOT / "assets/fonts/East_Sea_Dokdo/EastSeaDokdo-Regular.ttf"),
+                str(ROOT / "assets/fonts/Kirang_Haerang/KirangHaerang-Regular.ttf"),
+                r"C:\Windows\Fonts\NotoSerifKR-VF.ttf",
+                r"C:\Windows\Fonts\batang.ttc",
+                r"C:\Windows\Fonts\malgunbd.ttf",
+            ),
+            font_scale=1.38,
+            stroke_scale=2.55,
+            shadow_offset=(0.30, 0.34),
+            scale_x=1.26,
+            scale_y=0.92,
+            shear_x=-0.18,
+            extrusion_fill=(220, 21, 28, 235),
+            extrusion_offset=(0.34, 0.22),
+            burst_scale=1.65,
+            angle=-10.0,
+            accent="burst",
+        ),
+    ),
+    (
+        re.compile("(\uc288\uc6b1|\uc289|\uc27d|\ucd2c\uc545|\ucc59|\uce74\uc559|\uce89|\uc9f1|\ud0a4\uc789)"),
+        CaptionStyle(
+            name="slash",
+            fill=(235, 248, 255),
+            stroke_fill=(5, 22, 42),
+            shadow_fill=(75, 0, 9, 220),
+            accent_fill=(222, 26, 44, 220),
+            font_candidates=(
+                str(ROOT / "assets/fonts/Nanum_Brush_Script/NanumBrushScript-Regular.ttf"),
+                str(ROOT / "assets/fonts/Nanum_Pen_Script/NanumPenScript-Regular.ttf"),
+                r"C:\Windows\Fonts\malgunsl.ttf",
+                r"C:\Windows\Fonts\NotoSansKR-VF.ttf",
+                r"C:\Windows\Fonts\gulim.ttc",
+            ),
+            font_scale=1.22,
+            stroke_scale=1.65,
+            shadow_offset=(0.28, 0.20),
+            scale_x=1.32,
+            scale_y=0.82,
+            shear_x=-0.26,
+            extrusion_fill=(18, 18, 22, 220),
+            extrusion_offset=(0.20, 0.12),
+            burst_scale=1.15,
+            angle=-14.0,
+            accent="speed",
+        ),
+    ),
+    (
+        re.compile("(\ucfe0\uc6c5|\uad11|\uad49|\ucfe1|\ucfe0|\ub4dc\uc775|\ub4dd)"),
+        CaptionStyle(
+            name="heavy_impact",
+            fill=(255, 205, 64),
+            stroke_fill=(37, 13, 9),
+            shadow_fill=(96, 0, 0, 230),
+            accent_fill=(215, 26, 36, 235),
+            font_candidates=(
+                str(ROOT / "assets/fonts/Bagel_Fat_One/BagelFatOne-Regular.ttf"),
+                str(ROOT / "assets/fonts/Dongle/Dongle-Bold.ttf"),
+                r"C:\Windows\Fonts\malgunbd.ttf",
+                r"C:\Windows\Fonts\NotoSansKR-VF.ttf",
+            ),
+            font_scale=1.42,
+            stroke_scale=2.65,
+            shadow_offset=(0.34, 0.34),
+            scale_x=1.20,
+            scale_y=1.02,
+            shear_x=0.10,
+            extrusion_fill=(210, 24, 24, 235),
+            extrusion_offset=(0.36, 0.28),
+            burst_scale=1.85,
+            angle=7.0,
+            accent="burst",
+        ),
+    ),
+    (
+        re.compile("(\ucc0c|\uc9c0\uc789|\ube44\ube59|\ub9c1|\ub9ac\ub9c1|\ub760\ub9ac\ub9c1)"),
+        CaptionStyle(
+            name="electronic",
+            fill=(255, 70, 214),
+            stroke_fill=(93, 244, 175),
+            shadow_fill=(3, 38, 87, 215),
+            accent_fill=(93, 244, 175, 230),
+            font_candidates=(
+                str(ROOT / "assets/fonts/Gaegu/Gaegu-Bold.ttf"),
+                str(ROOT / "assets/fonts/Dongle/Dongle-Regular.ttf"),
+                r"C:\Windows\Fonts\gulim.ttc",
+                r"C:\Windows\Fonts\HanSantteutDotum-Bold.ttf",
+                r"C:\Windows\Fonts\malgunbd.ttf",
+            ),
+            font_scale=1.18,
+            stroke_scale=1.65,
+            shadow_offset=(0.22, 0.24),
+            scale_x=1.08,
+            scale_y=0.94,
+            shear_x=-0.08,
+            burst_scale=1.05,
+            angle=-6.0,
+            accent="spark",
+        ),
+    ),
+    (
+        re.compile("(\ud31d|\ud0d5|\ud0c1|\ub531|\ud37d|\uc9dd|\ucc29|\ud321|\ud30d)"),
+        CaptionStyle(
+            name="impact",
+            fill=(255, 78, 50),
+            stroke_fill=(34, 10, 6),
+            shadow_fill=(0, 0, 0, 230),
+            accent_fill=(236, 28, 42, 230),
+            font_candidates=(
+                str(ROOT / "assets/fonts/Kirang_Haerang/KirangHaerang-Regular.ttf"),
+                str(ROOT / "assets/fonts/Bagel_Fat_One/BagelFatOne-Regular.ttf"),
+                r"C:\Windows\Fonts\NGULIM.TTF",
+                r"C:\Windows\Fonts\gulim.ttc",
+                r"C:\Windows\Fonts\malgunbd.ttf",
+            ),
+            font_scale=1.32,
+            stroke_scale=2.45,
+            shadow_offset=(0.28, 0.30),
+            scale_x=1.28,
+            scale_y=0.88,
+            shear_x=-0.20,
+            extrusion_fill=(205, 18, 28, 230),
+            extrusion_offset=(0.30, 0.20),
+            burst_scale=1.55,
+            angle=-8.0,
+            accent="burst",
+        ),
+    ),
+    (
+        re.compile("(\ub465|\ub450\uc6c5|\uc6c5|\ubd95|\ubd80\uc6c5|\ucfe0\uc6c5)"),
+        CaptionStyle(
+            name="bass",
+            fill=(58, 33, 28),
+            stroke_fill=(255, 226, 175),
+            shadow_fill=(0, 12, 32, 205),
+            accent_fill=(215, 26, 36, 210),
+            font_candidates=(
+                str(ROOT / "assets/fonts/Song_Myung/SongMyung-Regular.ttf"),
+                str(ROOT / "assets/fonts/Diphylleia/Diphylleia-Regular.ttf"),
+                r"C:\Windows\Fonts\batang.ttc",
+                r"C:\Windows\Fonts\NotoSerifKR-VF.ttf",
+                r"C:\Windows\Fonts\malgunbd.ttf",
+            ),
+            font_scale=1.22,
+            stroke_scale=1.7,
+            shadow_offset=(0.24, 0.26),
+            angle=3.0,
+            accent="none",
+        ),
+    ),
+    (
+        re.compile("(\ub530|\ud0c0|\ub2e4\ub2e5|\ud30c\ubc15|\ub9ac\ub4ec|\ub9ac\ub9ac)"),
+        CaptionStyle(
+            name="rhythm",
+            fill=(255, 214, 92),
+            stroke_fill=(43, 12, 8),
+            shadow_fill=(116, 0, 0, 190),
+            accent_fill=(230, 28, 42, 210),
+            font_candidates=(
+                str(ROOT / "assets/fonts/Dongle/Dongle-Bold.ttf"),
+                str(ROOT / "assets/fonts/Gaegu/Gaegu-Bold.ttf"),
+                r"C:\Windows\Fonts\HanSantteutDotum-Bold.ttf",
+                r"C:\Windows\Fonts\malgunbd.ttf",
+            ),
+            font_scale=1.12,
+            stroke_scale=1.45,
+            shadow_offset=(0.18, 0.16),
+            angle=5.0,
+            accent="speed",
+        ),
+    ),
+]
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -350,14 +570,20 @@ def should_show(row: MatchRow, mode: str, min_rms: float, uncertain_confidence: 
     raise ValueError(f"Unsupported show mode: {mode}")
 
 
-def resolve_font(font_path: Path | None, font_size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+def resolve_font(
+    font_path: Path | None,
+    font_size: int,
+    style: CaptionStyle | None = None,
+) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     candidates = []
     if font_path is not None:
         candidates.append(font_path)
+    if style is not None:
+        candidates.extend(Path(candidate) for candidate in style.font_candidates)
     candidates.extend(
         [
-            Path(r"C:\Windows\Fonts\malgun.ttf"),
             Path(r"C:\Windows\Fonts\malgunbd.ttf"),
+            Path(r"C:\Windows\Fonts\malgun.ttf"),
             Path(r"C:\Windows\Fonts\arial.ttf"),
         ]
     )
@@ -367,12 +593,230 @@ def resolve_font(font_path: Path | None, font_size: int) -> ImageFont.FreeTypeFo
     return ImageFont.load_default()
 
 
+def clamp_int(value: float, minimum: int, maximum: int) -> int:
+    if maximum < minimum:
+        maximum = minimum
+    return max(minimum, min(maximum, int(round(value))))
+
+
+def font_size_for_bbox(
+    bbox_height: float,
+    mode: str,
+    fixed_size: int,
+    scale: float,
+    min_size: int,
+    max_size: int,
+) -> int:
+    if mode == "fixed":
+        return fixed_size
+    if mode == "bbox":
+        return clamp_int(bbox_height * scale, min_size, max_size)
+    raise ValueError(f"Unsupported font size mode: {mode}")
+
+
+def anchor_fraction_for_bbox(
+    bbox_height: float,
+    mode: str,
+    anchor_fraction: float,
+    small_threshold: float,
+    small_anchor_fraction: float,
+) -> float:
+    if mode == "fraction":
+        return anchor_fraction
+    if mode == "adaptive":
+        return small_anchor_fraction if bbox_height <= small_threshold else anchor_fraction
+    raise ValueError(f"Unsupported caption anchor mode: {mode}")
+
+
+def select_caption_style(text: str) -> CaptionStyle:
+    compact = re.sub(r"\s+", "", text)
+    for pattern, style in CAPTION_STYLE_RULES:
+        if pattern.search(compact):
+            return style
+    return DEFAULT_CAPTION_STYLE
+
+
+def rgba(color: tuple[int, int, int] | tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    if len(color) == 4:
+        return color
+    return (color[0], color[1], color[2], 255)
+
+
+def draw_accent_marks(
+    draw: ImageDraw.ImageDraw,
+    layer_size: tuple[int, int],
+    style: CaptionStyle,
+    font_size: int,
+) -> None:
+    if style.accent == "none":
+        return
+    width, height = layer_size
+    color = style.accent_fill
+    burst_scale = max(0.4, style.burst_scale)
+    line_width = max(2, int(round(font_size * 0.08 * burst_scale)))
+    if style.accent == "burst":
+        cx = width / 2.0
+        cy = height / 2.0
+        outer_x = width * 0.48
+        outer_y = height * 0.48
+        inner_x = outer_x * 0.42
+        inner_y = outer_y * 0.42
+        points = []
+        for index in range(28):
+            angle = (math.tau * index / 28.0) - 0.16
+            radius_x = outer_x if index % 2 == 0 else inner_x
+            radius_y = outer_y if index % 2 == 0 else inner_y
+            points.append((cx + math.cos(angle) * radius_x, cy + math.sin(angle) * radius_y))
+        shadow_points = [(x + font_size * 0.08, y + font_size * 0.09) for x, y in points]
+        accent_rgba = rgba(color)
+        draw.polygon(shadow_points, fill=(0, 0, 0, 110))
+        draw.polygon(points, fill=(accent_rgba[0], accent_rgba[1], accent_rgba[2], 78))
+        draw.line(points + [points[0]], fill=(0, 0, 0, 180), width=max(1, line_width // 2))
+        marks = [
+            ((font_size * 0.4, font_size * 0.4), (font_size * 1.2 * burst_scale, font_size * 0.05)),
+            ((font_size * 0.65, height - font_size * 0.35), (font_size * 0.08, height - font_size * 0.08)),
+            ((width - font_size * 0.85, font_size * 0.35), (width - font_size * 0.1, font_size * 0.05)),
+            ((width - font_size * 0.45, height - font_size * 0.55), (width - font_size * 0.04, height - font_size * 0.12)),
+        ]
+    elif style.accent == "spark":
+        cx = width - font_size * 0.45
+        cy = font_size * 0.45
+        arm = font_size * 0.22
+        marks = [
+            ((cx - arm, cy), (cx + arm, cy)),
+            ((cx, cy - arm), (cx, cy + arm)),
+            ((font_size * 0.35, height - font_size * 0.35), (font_size * 0.75, height - font_size * 0.75)),
+        ]
+    else:
+        marks = [
+            ((font_size * 0.25, font_size * 0.35), (font_size * 0.75, font_size * 0.1)),
+            ((font_size * 0.35, font_size * 0.65), (font_size * 0.9, font_size * 0.35)),
+            ((width - font_size * 0.85, height - font_size * 0.3), (width - font_size * 0.25, height - font_size * 0.6)),
+        ]
+    for start, end in marks:
+        draw.line(start + end, fill=color, width=line_width)
+
+
+def transform_caption_layer(layer: Image.Image, style: CaptionStyle) -> Image.Image:
+    scale_x = max(0.2, style.scale_x)
+    scale_y = max(0.2, style.scale_y)
+    if abs(scale_x - 1.0) > 0.01 or abs(scale_y - 1.0) > 0.01:
+        layer = layer.resize(
+            (
+                max(1, int(round(layer.size[0] * scale_x))),
+                max(1, int(round(layer.size[1] * scale_y))),
+            ),
+            Image.Resampling.BICUBIC,
+        )
+
+    shear_x = style.shear_x
+    if abs(shear_x) > 0.01:
+        width, height = layer.size
+        x_offset = max(0.0, -shear_x * height)
+        new_width = max(1, int(round(width + abs(shear_x) * height)))
+        layer = layer.transform(
+            (new_width, height),
+            Image.Transform.AFFINE,
+            (1, -shear_x, -x_offset, 0, 1, 0),
+            resample=Image.Resampling.BICUBIC,
+            fillcolor=(0, 0, 0, 0),
+        )
+    return layer
+
+
+def draw_typographic_caption(
+    image: Image.Image,
+    text: str,
+    anchor_xy: tuple[float, float],
+    font: ImageFont.ImageFont,
+    font_size: int,
+    style: CaptionStyle,
+) -> None:
+    scratch = ImageDraw.Draw(Image.new("RGBA", (1, 1), (0, 0, 0, 0)))
+    stroke_width = max(1, int(round(font_size / 18 * style.stroke_scale)))
+    shadow_x = int(round(font_size * style.shadow_offset[0]))
+    shadow_y = int(round(font_size * style.shadow_offset[1]))
+    text_bbox = scratch.textbbox((0, 0), text, font=font, stroke_width=stroke_width)
+    text_width = text_bbox[2] - text_bbox[0]
+    text_height = text_bbox[3] - text_bbox[1]
+    pad = max(8, int(round(font_size * (0.48 + 0.22 * max(0.0, style.burst_scale - 1.0)))))
+
+    extrude_x = int(round(font_size * style.extrusion_offset[0]))
+    extrude_y = int(round(font_size * style.extrusion_offset[1]))
+    layer_width = max(1, text_width + pad * 2 + abs(shadow_x) + abs(extrude_x) + stroke_width * 2)
+    layer_height = max(1, text_height + pad * 2 + abs(shadow_y) + abs(extrude_y) + stroke_width * 2)
+    layer = Image.new("RGBA", (layer_width, layer_height), (0, 0, 0, 0))
+    layer_draw = ImageDraw.Draw(layer)
+    text_x = pad - text_bbox[0]
+    text_y = pad - text_bbox[1]
+
+    draw_accent_marks(layer_draw, layer.size, style, font_size)
+    if style.extrusion_fill is not None and (abs(extrude_x) > 0 or abs(extrude_y) > 0):
+        steps = max(2, int(round(max(abs(extrude_x), abs(extrude_y)) / max(1, font_size * 0.08))))
+        for step in range(steps, 0, -1):
+            ratio = step / steps
+            layer_draw.text(
+                (text_x + extrude_x * ratio, text_y + extrude_y * ratio),
+                text,
+                font=font,
+                fill=style.extrusion_fill,
+                stroke_width=stroke_width,
+                stroke_fill=style.extrusion_fill,
+            )
+    layer_draw.text(
+        (text_x + shadow_x, text_y + shadow_y),
+        text,
+        font=font,
+        fill=style.shadow_fill,
+        stroke_width=stroke_width,
+        stroke_fill=style.shadow_fill,
+    )
+    layer_draw.text(
+        (text_x, text_y),
+        text,
+        font=font,
+        fill=rgba(style.fill),
+        stroke_width=stroke_width,
+        stroke_fill=rgba(style.stroke_fill),
+    )
+
+    layer = transform_caption_layer(layer, style)
+    if abs(style.angle) > 0.01:
+        layer = layer.rotate(style.angle, resample=Image.Resampling.BICUBIC, expand=True)
+
+    width, height = image.size
+    fit_scale = min(1.0, width / max(1, layer.size[0]), height / max(1, layer.size[1]))
+    if fit_scale < 1.0:
+        layer = layer.resize(
+            (
+                max(1, int(round(layer.size[0] * fit_scale))),
+                max(1, int(round(layer.size[1] * fit_scale))),
+            ),
+            Image.Resampling.LANCZOS,
+        )
+    max_left = max(0, width - layer.size[0])
+    max_top = max(0, height - layer.size[1])
+    left = clamp_int(anchor_xy[0] - layer.size[0] / 2, 0, max_left)
+    top = clamp_int(anchor_xy[1] - layer.size[1] / 2, 0, max_top)
+    image.paste(layer, (left, top), layer)
+
+
 def draw_caption(
     frame_bgr: np.ndarray,
     text: str,
     bbox: tuple[float, float, float, float],
-    font: ImageFont.ImageFont,
+    font_path: Path | None,
+    font_cache: dict[tuple[str, int], ImageFont.ImageFont],
+    font_size_mode: str,
+    fixed_font_size: int,
+    bbox_font_scale: float,
+    min_font_size: int,
+    max_font_size: int,
+    caption_anchor_mode: str,
     anchor_fraction: float,
+    small_bbox_height_threshold: float,
+    small_anchor_fraction: float,
+    caption_style: str,
 ) -> np.ndarray:
     frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
     image = Image.fromarray(frame_rgb)
@@ -382,11 +826,61 @@ def draw_caption(
     box_width = max(1.0, x2 - x1)
     box_height = max(1.0, y2 - y1)
     anchor_x = x1 + box_width / 2.0
-    anchor_y = y1 + box_height * anchor_fraction
+    effective_anchor_fraction = anchor_fraction_for_bbox(
+        bbox_height=box_height,
+        mode=caption_anchor_mode,
+        anchor_fraction=anchor_fraction,
+        small_threshold=small_bbox_height_threshold,
+        small_anchor_fraction=small_anchor_fraction,
+    )
+    anchor_y = y1 + box_height * effective_anchor_fraction
 
-    pad_x = 14
-    pad_y = 8
-    text_bbox = draw.textbbox((0, 0), text, font=font, stroke_width=2)
+    dynamic_font_size = font_size_for_bbox(
+        bbox_height=box_height,
+        mode=font_size_mode,
+        fixed_size=fixed_font_size,
+        scale=bbox_font_scale,
+        min_size=min_font_size,
+        max_size=max_font_size,
+    )
+    style = select_caption_style(text) if caption_style == "rule" else DEFAULT_CAPTION_STYLE
+    dynamic_font_size = clamp_int(
+        dynamic_font_size * (style.font_scale if caption_style == "rule" else 1.0),
+        min_font_size,
+        max(max_font_size, int(round(max_font_size * style.font_scale))),
+    )
+    font_cache_key = (style.name if caption_style == "rule" else caption_style, dynamic_font_size)
+    font = font_cache.get(font_cache_key)
+    if font is None:
+        font = resolve_font(font_path, dynamic_font_size, style=style)
+        font_cache[font_cache_key] = font
+
+    if caption_style in {"rule", "plain"}:
+        if caption_style == "plain":
+            style = CaptionStyle(
+                name="plain",
+                fill=(255, 255, 255),
+                stroke_fill=(0, 0, 0),
+                shadow_fill=(0, 0, 0, 170),
+                accent_fill=(255, 255, 255, 0),
+                stroke_scale=1.0,
+                shadow_offset=(0.08, 0.10),
+            )
+        draw_typographic_caption(
+            image=image,
+            text=text,
+            anchor_xy=(anchor_x, anchor_y),
+            font=font,
+            font_size=dynamic_font_size,
+            style=style,
+        )
+        return cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2BGR)
+
+    pad_x = max(4, int(round(dynamic_font_size * 0.32)))
+    pad_y = max(3, int(round(dynamic_font_size * 0.18)))
+    stroke_width = max(1, int(round(dynamic_font_size / 22)))
+    radius = max(3, int(round(dynamic_font_size * 0.18)))
+    text_bbox = draw.textbbox((0, 0), text, font=font, stroke_width=stroke_width)
     text_width = text_bbox[2] - text_bbox[0]
     text_height = text_bbox[3] - text_bbox[1]
 
@@ -411,13 +905,13 @@ def draw_caption(
     left = max(0, left)
     top = max(0, top)
 
-    draw.rounded_rectangle((left, top, right, bottom), radius=8, fill=(0, 0, 0))
+    draw.rounded_rectangle((left, top, right, bottom), radius=radius, fill=(0, 0, 0))
     draw.text(
         (left + pad_x, top + pad_y),
         text,
         font=font,
         fill=(255, 255, 255),
-        stroke_width=2,
+        stroke_width=stroke_width,
         stroke_fill=(0, 0, 0),
     )
 
@@ -596,7 +1090,7 @@ def render_video(args: argparse.Namespace) -> None:
         )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    font = resolve_font(args.font, args.font_size)
+    font_cache: dict[tuple[str, int], ImageFont.ImageFont] = {}
 
     with tempfile.TemporaryDirectory() as temp_name:
         temp_video = Path(temp_name) / "captioned_no_audio.mp4"
@@ -645,8 +1139,18 @@ def render_video(args: argparse.Namespace) -> None:
                     frame,
                     text=token.text,
                     bbox=position_row.bbox,
-                    font=font,
+                    font_path=args.font,
+                    font_cache=font_cache,
+                    font_size_mode=args.font_size_mode,
+                    fixed_font_size=args.font_size,
+                    bbox_font_scale=args.bbox_font_scale,
+                    min_font_size=args.min_font_size,
+                    max_font_size=args.max_font_size,
+                    caption_anchor_mode=args.caption_anchor_mode,
                     anchor_fraction=args.anchor_fraction,
+                    small_bbox_height_threshold=args.small_bbox_height_threshold,
+                    small_anchor_fraction=args.small_anchor_fraction,
+                    caption_style=args.caption_style,
                 )
                 drawn_count += 1
 
@@ -718,7 +1222,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--uncertain-confidence", type=float, default=0.65)
     parser.add_argument("--token-duration", type=float, default=0.45)
     parser.add_argument("--max-token-duration", type=float, default=0.9)
-    parser.add_argument("--anchor-fraction", type=float, default=0.11)
+    parser.add_argument("--anchor-fraction", type=float, default=-0.10)
     parser.add_argument(
         "--position-mode",
         choices=["dynamic", "fixed-by-scene"],
@@ -749,6 +1253,47 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fixed-min-samples", type=int, default=2)
     parser.add_argument("--font", type=Path, default=None)
     parser.add_argument("--font-size", type=int, default=44)
+    parser.add_argument(
+        "--font-size-mode",
+        choices=["fixed", "bbox"],
+        default="bbox",
+        help="fixed: use --font-size; bbox: scale font size from each object's bbox height.",
+    )
+    parser.add_argument(
+        "--bbox-font-scale",
+        type=float,
+        default=0.35,
+        help="Font size multiplier for bbox-height-based captions.",
+    )
+    parser.add_argument("--min-font-size", type=int, default=14)
+    parser.add_argument("--max-font-size", type=int, default=28)
+    parser.add_argument(
+        "--caption-style",
+        choices=["rule", "plain", "box"],
+        default="rule",
+        help=(
+            "rule: choose typography style from caption text; plain: no background, white text; "
+            "box: original black background box."
+        ),
+    )
+    parser.add_argument(
+        "--caption-anchor-mode",
+        choices=["fraction", "adaptive"],
+        default="adaptive",
+        help="fraction: always use --anchor-fraction; adaptive: use --small-anchor-fraction for small bboxes.",
+    )
+    parser.add_argument(
+        "--small-bbox-height-threshold",
+        type=float,
+        default=90.0,
+        help="Bbox heights at or below this value use --small-anchor-fraction in adaptive mode.",
+    )
+    parser.add_argument(
+        "--small-anchor-fraction",
+        type=float,
+        default=-0.10,
+        help="Anchor fraction used for small bboxes in adaptive mode. -0.10 places the caption just above the bbox.",
+    )
     parser.add_argument("--no-interpolate", dest="interpolate", action="store_false")
     parser.set_defaults(interpolate=True)
     parser.add_argument("--no-audio", dest="keep_audio", action="store_false")
@@ -762,3 +1307,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

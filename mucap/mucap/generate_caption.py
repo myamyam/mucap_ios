@@ -143,25 +143,66 @@ def build_prompt_rhythm(audio_b64: str, design_prompt=None, music_features=None,
     duration_sec = float(duration_sec)
     end_sec = prompt_end_second(duration_sec)
 
+    hangul_examples = (
+        "\ucc0c\uc789, \ub545, \ub69c\uc6c5, \uc0bd\ube44\ube45, "
+        "\ub530\ub77c\ub77c, \uc9dc\ub77c, \ucfe0, \ud0c1, \ub760\ub9ac\ub9c1, "
+        "\uc73c\uc545, \ud06c\uc545, \ucc59, \uc288\uc6b1, \ud37d, \ucfe0\uc6c5"
+    )
     text = (
-        "1) [Role]: You are a subtitle creator who listens to music and writes Korean vocalizations that closely mimic the sound. Onomatopoeia is allowed, but the goal is to imitate the actual audio with mouth-made syllables.\n"
-        f"2) [Objective]: Listen to the {duration_sec:.1f}-second clip and transcribe it with Korean syllabic scat (e.g., jjiing, ttang, ttu-woong, ppi-bi-bi, ttarra, jjara) that best matches the real texture and timing. "
-        "Consider rhythm, intensity, tone, and duration, and write as if placing captions on a video so the heard sounds feel natural and vivid. "
-        "Onomatopoeia is allowed, but choose syllables that most closely imitate the actual sound rather than abstract repetition.\n"
+        "You are an audio subtitle writer. Listen to the audio and create sound-mimetic "
+        "captions using Hangul Korean onomatopoeia only.\n"
+        f"Audio duration: {duration_sec:.1f} seconds. End timestamps must be between 0.00 "
+        f"and {end_sec:.1f} seconds.\n"
+        f"{feature_str}\n"
+        "Output rules are strict:\n"
+        "- Return exactly one line and nothing else.\n"
+        "- Every caption unit must match this pattern: [seconds] HangulText\n"
+        "- Use spaces between units, for example: "
+        "[0.00] \ucfe0 [0.45] \ud0c1 [0.80] \ub450\ub465 "
+        "[1.25] \ucc0c\uc789 [1.70] \ud321\n"
+        "- Use Hangul Korean onomatopoeia such as: "
+        f"{hangul_examples}.\n"
+        "- For fight scenes, prefer harsher battle shouts, sword clashes, air slashes, "
+        "and heavy hit syllables when the audio supports them.\n"
+        "- Do not write explanations, greetings, markdown, English words, romanized Korean, "
+        "Japanese, adjectives, or extra symbols.\n"
+        "- Do not say you will analyze the audio. Directly output the timestamped caption line.\n"
+        "- Use as many units as needed to match audible rhythm and sound events.\n"
+        "- If unsure, still output a short valid caption line with timestamps.\n"
+        f"Optional style guide: {design_prompt or 'No guide'}"
+    )
+
+    return [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": text},
+                {"type": "input_audio",
+                 "input_audio": {"data": audio_b64, "format": "mp3"}}
+            ],
+        }
+    ]
+
+    text = (
+        "1) [Role]: 당신은 소리를 듣고 실제 청감에 가까운 한글 의성어 자막을 쓰는 자막 제작자입니다. 입으로 따라 말할 수 있는 한글 음절로 소리의 질감, 리듬, 세기를 흉내 내세요.\n"
+        f"2) [Objective]: {duration_sec:.1f}초 길이의 오디오를 듣고, 실제 소리의 타이밍과 질감에 맞는 한글 의성어 자막으로 전사하세요. 예: 찌잉, 땅, 뚜웅, 삐비빅, 따라라, 짜라, 쿵, 탁, 띠리링. "
+        "리듬, 강도, 음색, 지속시간을 고려하고, 영상 위에 올라갈 자막처럼 자연스럽고 생생하게 쓰세요. "
+        "추상적인 반복보다 실제로 들리는 소리를 가장 잘 흉내 내는 한글 음절을 고르세요.\n"
         f"{feature_str}\n"
         "3) [Format]\n"
-        "   - Each unit should follow `[sec] syllable` (e.g., `[0.00] dun-dun`), separated by spaces\n"
-        "   - Prohibit numbers, English words, adjectives, Japanese, symbols, or newlines; output only one line\n"
+        "   - Each unit should follow `[sec] 한글의성어` (e.g., `[0.00] 쿵`), separated by spaces\n"
+        "   - Except for timestamp numbers inside brackets, output Hangul Korean onomatopoeia only\n"
+        "   - Do not use English words, romanized Korean such as ttang/kung/jjiing, Japanese, adjectives, extra symbols, or newlines; output only one line\n"
         f"   - Write time-aligned Korean syllabic captions only between 0.00 and {end_sec:.1f} seconds.\n"
         "   - Use as many caption units as needed to match the audible rhythm and sound events.\n"
         "   - Do not force a fixed number of units.\n"
         f"   - If the sound continues throughout the clip, distribute captions across the full duration from the beginning to near {end_sec:.1f}s.\n"
         "   - Do not stop early while audible sound continues.\n"
         "   - Avoid timestamps outside the audio duration.\n"
-        "   - Choose consonant and vowel combinations that connect smoothly with preceding words \n"
+        "   - Choose Korean consonant and vowel combinations that connect smoothly with preceding caption units\n"
         "   - Mimic the actual rhythm and sound as closely as possible\n"
         f"4) [Guide] {design_prompt or 'No guide'}"
-        "5) [Example] [0.00] dung [0.45] tang [0.80] du-doong [1.25] jjiing [1.70] pang"
+        "5) [Example] [0.00] 둥 [0.45] 탕 [0.80] 두둥 [1.25] 찌잉 [1.70] 팡"
         # "6) [Reference rules]\n"
         # "- For loud and short sounds, use sharp transient syllables like 'ttak', 'tchak', 'jjang'"
         # "- For low, sustained tones, use forms like 'doong', 'woong', 'boong'"

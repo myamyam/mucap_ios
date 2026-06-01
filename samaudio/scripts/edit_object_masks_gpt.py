@@ -3,6 +3,7 @@ import base64
 import json
 import os
 import re
+import shutil
 import tempfile
 import time
 from contextlib import ExitStack
@@ -134,20 +135,13 @@ def load_object_plan(plan_path: Path) -> list[dict[str, Any]]:
 
 def build_prompt(objects: list[dict[str, Any]], extra_prompt: str | None) -> str:
     lines = [
-        "Edit this concert frame for machine-vision masking.",
-        "The first input image is the current frame that must be edited.",
-        "If a second input image is provided, it is the previous frame's colored output.",
-        "Use the second input image only as a temporal consistency reference so the same physical object keeps the same color across frames.",
-        "Never copy the previous frame geometry into the current frame; follow the current frame's visible object positions.",
-        "For each listed object, color the entire visible musician/person playing that instrument as one object.",
-        "Include the player's visible body, face, hair, clothing, hands, arms, the instrument, and the bow or other playing accessory attached to that player.",
-        "Do not color separate non-playing people or any unrelated instruments.",
-        "Set every non-target pixel to pure black RGB(0, 0, 0), including background, stage, chairs, music stands, microphones, audience, screen, logo, and unrelated objects.",
-        "Preserve the original resolution, composition, lighting, and geometry as much as possible.",
-        "Use solid, opaque colors from the exact RGB palette below. Do not use gradients, shadows, glow, transparency, labels, outlines, text, or annotations.",
-        "If an object is not visible in this frame, leave it black and uncolored.",
-        "Only use these object colors and pure black RGB(0, 0, 0).",
-        "Object RGB color map:",
+        "Create a black-background RGB label map for this video frame.",
+        "Use one solid RGB color for each listed sprite.",
+        "Fill only the visible pixels of each listed sprite.",
+        "Use only the listed RGB colors and pure black RGB(0, 0, 0).",
+        "Do not add text, outlines, labels, shadows, or effects.",
+        "If a listed sprite is not visible, leave it black.",
+        "Sprite RGB color map:",
     ]
     for obj in objects:
         hint = f" Hint: {obj['prompt_hint']}" if obj["prompt_hint"] else ""
@@ -159,8 +153,7 @@ def build_prompt(objects: list[dict[str, Any]], extra_prompt: str | None) -> str
         lines.extend(["Additional instruction:", extra_prompt])
     lines.extend(
         [
-            "The input may be placed on a padded API canvas. Only edit the real video frame content.",
-            "Keep the real video frame content in the same position and aspect ratio.",
+            "Keep the same frame size and aspect ratio.",
         ]
     )
     return "\n".join(lines)
@@ -250,11 +243,74 @@ def restore_source_aspect(
     restored.save(output_path)
 
 
+def component_labels(mask: np.ndarray) -> tuple[np.ndarray, int]:
+    try:
+        import cv2
+    except ImportError:
+        cv2 = None
+
+    if cv2 is not None:
+        labels_count, labels = cv2.connectedComponents(mask.astype("uint8"), connectivity=8)
+        return labels, labels_count
+
+    height, width = mask.shape
+    labels = np.zeros((height, width), dtype=np.int32)
+    label = 0
+    for start_y, start_x in zip(*np.where(mask & (labels == 0)), strict=False):
+        label += 1
+        stack = [(int(start_y), int(start_x))]
+        labels[start_y, start_x] = label
+        while stack:
+            y, x = stack.pop()
+            for ny in range(max(0, y - 1), min(height, y + 2)):
+                for nx in range(max(0, x - 1), min(width, x + 2)):
+                    if labels[ny, nx] == 0 and mask[ny, nx]:
+                        labels[ny, nx] = label
+                        stack.append((ny, nx))
+    return labels, label + 1
+
+
+def solidify_component_colors(
+    image: np.ndarray,
+    palette: list[tuple[int, int, int]],
+    black_tolerance: int,
+    min_component_area: int,
+    dominance_ratio: float,
+) -> np.ndarray:
+    non_black = image.max(axis=2) > black_tolerance
+    labels, labels_count = component_labels(non_black)
+    output = image.copy()
+    palette_array = np.asarray(palette, dtype=np.uint8)
+
+    for label in range(1, labels_count):
+        component = labels == label
+        area = int(component.sum())
+        if area < min_component_area:
+            output[component] = (0, 0, 0)
+            continue
+        pixels = image[component]
+        counts = [
+            int(np.all(pixels == color, axis=1).sum())
+            for color in palette_array
+        ]
+        best_index = int(np.argmax(counts))
+        if counts[best_index] <= 0:
+            continue
+        if counts[best_index] / area < dominance_ratio:
+            continue
+        output[component] = palette_array[best_index]
+
+    return output
+
+
 def quantize_mask_image(
     image_path: Path,
     palette: list[tuple[int, int, int]],
     black_tolerance: int,
     color_tolerance: int,
+    solidify_components: bool,
+    solidify_min_component_area: int,
+    solidify_dominance_ratio: float,
 ) -> None:
     if not palette:
         raise ValueError("Cannot quantize mask image without at least one palette color")
@@ -269,6 +325,15 @@ def quantize_mask_image(
     close_enough = distances.min(axis=2) <= color_tolerance
     quantized = palette_array[nearest].astype(np.uint8)
     quantized[~(non_black & close_enough)] = (0, 0, 0)
+
+    if solidify_components:
+        quantized = solidify_component_colors(
+            quantized,
+            palette,
+            black_tolerance,
+            solidify_min_component_area,
+            solidify_dominance_ratio,
+        )
 
     Image.fromarray(quantized, mode="RGB").save(image_path)
 
@@ -289,6 +354,32 @@ def decode_image_response(result: Any) -> bytes:
     raise RuntimeError("OpenAI image edit response had neither b64_json nor url")
 
 
+def is_moderation_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "moderation_blocked" in text or "safety system" in text
+
+
+def write_black_mask_like(frame_path: Path, output_path: Path) -> None:
+    image = Image.open(frame_path).convert("RGB")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", image.size, (0, 0, 0)).save(output_path)
+
+
+def write_fallback_mask(
+    frame_path: Path,
+    output_path: Path,
+    previous_output_path: Path | None,
+    reason: str,
+) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if previous_output_path is not None and previous_output_path.exists():
+        shutil.copyfile(previous_output_path, output_path)
+        print(f"  Fallback mask: copied {previous_output_path.name} -> {output_path.name} ({reason})")
+        return
+    write_black_mask_like(frame_path, output_path)
+    print(f"  Fallback mask: wrote black mask {output_path.name} ({reason})")
+
+
 def edit_frame(
     client: Any,
     model: str,
@@ -302,6 +393,9 @@ def edit_frame(
     quantize_palette: list[tuple[int, int, int]] | None,
     quantize_black_tolerance: int,
     quantize_color_tolerance: int,
+    solidify_components: bool,
+    solidify_min_component_area: int,
+    solidify_dominance_ratio: float,
 ) -> None:
     with tempfile.TemporaryDirectory() as temp_name, ExitStack() as stack:
         temp_dir = Path(temp_name)
@@ -364,6 +458,9 @@ def edit_frame(
             quantize_palette,
             quantize_black_tolerance,
             quantize_color_tolerance,
+            solidify_components,
+            solidify_min_component_area,
+            solidify_dominance_ratio,
         )
 
 
@@ -397,6 +494,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sleep", type=float, default=0.0)
     parser.add_argument("--skip-existing", action="store_true")
     parser.add_argument(
+        "--fallback-on-moderation",
+        choices=["copy-previous", "black", "error"],
+        default="copy-previous",
+        help=(
+            "When the image edit API blocks a frame, either copy the previous successful "
+            "mask, write a black mask, or raise the error."
+        ),
+    )
+    parser.add_argument(
         "--no-previous-output-reference",
         action="store_true",
         help="Disable passing the previous colored output image as a consistency reference.",
@@ -406,6 +512,27 @@ def parse_args() -> argparse.Namespace:
         "--no-quantize-palette",
         action="store_true",
         help="Disable post-processing that snaps every non-black pixel to the nearest object RGB color.",
+    )
+    parser.add_argument(
+        "--no-solidify-components",
+        action="store_true",
+        help="Disable post-processing that forces each connected non-black component to one dominant palette color.",
+    )
+    parser.add_argument(
+        "--solidify-min-component-area",
+        type=int,
+        default=20,
+        help="Minimum connected-component area for dominant-color solidification.",
+    )
+    parser.add_argument(
+        "--solidify-dominance-ratio",
+        type=float,
+        default=0.72,
+        help=(
+            "Only force a connected component to one color when the dominant palette color "
+            "covers at least this fraction of the component. Lower values clean mixed-color "
+            "single objects more aggressively; higher values preserve adjacent touching objects."
+        ),
     )
     parser.add_argument(
         "--quantize-black-tolerance",
@@ -488,6 +615,9 @@ def main() -> None:
                     quantize_palette,
                     args.quantize_black_tolerance,
                     args.quantize_color_tolerance,
+                    not args.no_solidify_components,
+                    args.solidify_min_component_area,
+                    args.solidify_dominance_ratio,
                 )
                 print(f"  Quantized existing {output_path.name}")
             continue
@@ -497,21 +627,38 @@ def main() -> None:
             print(f"  Reference: {previous_output_path.name}")
         if client is None:
             raise RuntimeError("OpenAI client was not initialized for a frame that needs API editing.")
-        edit_frame(
-            client=client,
-            model=args.model,
-            frame_path=frame_path,
-            prompt=prompt,
-            output_path=output_path,
-            size=args.size,
-            quality=args.quality,
-            previous_output_path=previous_output_path,
-            preserve_source_aspect=not args.allow_api_aspect_change,
-            quantize_palette=quantize_palette,
-            quantize_black_tolerance=args.quantize_black_tolerance,
-            quantize_color_tolerance=args.quantize_color_tolerance,
-        )
-        print(f"Saved {output_path}")
+        try:
+            edit_frame(
+                client=client,
+                model=args.model,
+                frame_path=frame_path,
+                prompt=prompt,
+                output_path=output_path,
+                size=args.size,
+                quality=args.quality,
+                previous_output_path=previous_output_path,
+                preserve_source_aspect=not args.allow_api_aspect_change,
+                quantize_palette=quantize_palette,
+                quantize_black_tolerance=args.quantize_black_tolerance,
+                quantize_color_tolerance=args.quantize_color_tolerance,
+                solidify_components=not args.no_solidify_components,
+                solidify_min_component_area=args.solidify_min_component_area,
+                solidify_dominance_ratio=args.solidify_dominance_ratio,
+            )
+            print(f"Saved {output_path}")
+        except Exception as exc:
+            if not is_moderation_error(exc) or args.fallback_on_moderation == "error":
+                raise
+            if args.fallback_on_moderation == "black":
+                write_black_mask_like(frame_path, output_path)
+                print(f"  Fallback mask: wrote black mask {output_path.name} (moderation_blocked)")
+            else:
+                write_fallback_mask(
+                    frame_path=frame_path,
+                    output_path=output_path,
+                    previous_output_path=previous_output_path,
+                    reason="moderation_blocked",
+                )
         if args.sleep > 0:
             time.sleep(args.sleep)
 

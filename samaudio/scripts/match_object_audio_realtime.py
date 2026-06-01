@@ -19,6 +19,21 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def load_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+    with path.open("r", encoding="utf-8-sig") as fin:
+        for line in fin:
+            text = line.strip()
+            if not text or text.startswith("#") or "=" not in text:
+                continue
+            key, value = text.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and not os.environ.get(key):
+                os.environ[key] = value
+
+
 @dataclass(frozen=True)
 class ObjectAudio:
     object_id: str
@@ -514,6 +529,8 @@ def write_outputs(rows: list[dict[str, str]], fieldnames: list[str], output_csv:
 
 
 async def run(args: argparse.Namespace) -> None:
+    load_env_file(ROOT / ".env")
+
     manifest_path = args.manifest.resolve()
     clip_id, output_dir, manifest_objects = load_manifest(manifest_path)
     object_audio_map = load_object_audio_map(manifest_objects, output_dir)

@@ -1,5 +1,7 @@
 import argparse
+import glob
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -10,9 +12,46 @@ if FFMPEG_BIN.exists():
     os.add_dll_directory(str(FFMPEG_BIN))
 
 
+def find_tool(name: str) -> str:
+    exe_name = f"{name}.exe"
+    bundled = FFMPEG_BIN / exe_name
+    if bundled.exists():
+        return str(bundled)
+
+    found = shutil.which(name)
+    if found:
+        return found
+
+    candidates: list[str] = []
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if local_appdata:
+        candidates.extend(
+            glob.glob(
+                str(
+                    Path(local_appdata)
+                    / "Microsoft"
+                    / "WinGet"
+                    / "Packages"
+                    / "Gyan.FFmpeg*"
+                    / "ffmpeg-*"
+                    / "bin"
+                    / exe_name
+                )
+            )
+        )
+    for root in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)")):
+        if root:
+            candidates.extend(glob.glob(str(Path(root) / "GyanDLS" / "ffmpeg" / "bin" / exe_name)))
+            candidates.extend(glob.glob(str(Path(root) / "ffmpeg" / "bin" / exe_name)))
+
+    for candidate in candidates:
+        if Path(candidate).exists():
+            return candidate
+    return name
+
+
 def ffmpeg_exe() -> str:
-    bundled = FFMPEG_BIN / "ffmpeg.exe"
-    return str(bundled) if bundled.exists() else "ffmpeg"
+    return find_tool("ffmpeg")
 
 
 def resolve_input(path: str) -> Path:

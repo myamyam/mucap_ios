@@ -1,6 +1,8 @@
 import argparse
+import glob
 import math
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -14,7 +16,39 @@ if FFMPEG_BIN.exists():
 def tool_exe(name: str) -> str:
     exe_name = f"{name}.exe"
     bundled = FFMPEG_BIN / exe_name
-    return str(bundled) if bundled.exists() else name
+    if bundled.exists():
+        return str(bundled)
+
+    found = shutil.which(name)
+    if found:
+        return found
+
+    candidates: list[str] = []
+    local_appdata = os.environ.get("LOCALAPPDATA")
+    if local_appdata:
+        candidates.extend(
+            glob.glob(
+                str(
+                    Path(local_appdata)
+                    / "Microsoft"
+                    / "WinGet"
+                    / "Packages"
+                    / "Gyan.FFmpeg*"
+                    / "ffmpeg-*"
+                    / "bin"
+                    / exe_name
+                )
+            )
+        )
+    for root in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)")):
+        if root:
+            candidates.extend(glob.glob(str(Path(root) / "GyanDLS" / "ffmpeg" / "bin" / exe_name)))
+            candidates.extend(glob.glob(str(Path(root) / "ffmpeg" / "bin" / exe_name)))
+
+    for candidate in candidates:
+        if Path(candidate).exists():
+            return candidate
+    return name
 
 
 def resolve_input(path: str) -> Path:
@@ -108,18 +142,18 @@ def extract_frames(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Extract video frames at a fixed interval, defaulting to every 0.5 seconds."
+        description="Extract video frames at a fixed interval, defaulting to every 0.2 seconds."
     )
     parser.add_argument("--input", required=True, help="Input .mp4 video path.")
     parser.add_argument(
         "--output-dir",
         default=None,
-        help="Output frame directory. Defaults to outputs/video_assets/<video>/frames_0_5s.",
+        help="Output frame directory. Defaults to outputs/video_assets/<video>/frames_<interval>s.",
     )
     parser.add_argument(
         "--interval",
         type=float,
-        default=0.5,
+        default=0.2,
         help="Frame interval in seconds.",
     )
     parser.add_argument("--start", type=float, default=0.0, help="Start time in seconds.")

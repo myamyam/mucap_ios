@@ -65,7 +65,7 @@ def load_env_file(path: Path | None) -> None:
             key, value = text.split("=", 1)
             key = key.strip()
             value = value.strip().strip('"').strip("'")
-            if key and key not in os.environ:
+            if key and not os.environ.get(key):
                 os.environ[key] = value
 
 
@@ -77,7 +77,7 @@ def slugify_instrument(value: str) -> str:
     return slug
 
 
-def count_entries_from_description(path: Path) -> list[tuple[str, int]]:
+def object_specs_from_description(path: Path) -> list[dict[str, object]]:
     with path.open("r", encoding="utf-8-sig") as fin:
         data = json.load(fin)
 
@@ -87,25 +87,39 @@ def count_entries_from_description(path: Path) -> list[tuple[str, int]]:
         data = data["objects"]
 
     if isinstance(data, dict):
-        entries = []
+        specs = []
         for instrument, count in data.items():
-            entries.append((str(instrument), int(count)))
-        return entries
+            specs.append(
+                {
+                    "instrument": str(instrument),
+                    "count": int(count),
+                    "description": None,
+                    "prompt_hint": None,
+                }
+            )
+        return specs
 
     if isinstance(data, list):
-        entries = []
+        specs = []
         for index, item in enumerate(data, start=1):
             if not isinstance(item, dict):
                 raise ValueError(f"Object description entry {index} must be an object")
             instrument = item.get("instrument") or item.get("name") or item.get("class")
             if not instrument:
                 raise ValueError(f"Object description entry {index} is missing instrument")
-            entries.append((str(instrument), int(item.get("count", 1))))
-        return entries
+            specs.append(
+                {
+                    "instrument": str(instrument),
+                    "count": int(item.get("count", 1)),
+                    "description": item.get("description"),
+                    "prompt_hint": item.get("prompt_hint") or item.get("hint"),
+                }
+            )
+        return specs
 
     raise ValueError(
         "Object description JSON must be either {'instruments': {'violin': 3}} "
-        "or [{'instrument': 'violin', 'count': 3}]."
+        "or [{'instrument': 'violin', 'count': 3, 'description': '...'}]."
     )
 
 
@@ -114,14 +128,18 @@ def format_color(color: list[int]) -> str:
 
 
 def build_object_plan_from_description(description_path: Path) -> dict[str, list[dict[str, object]]]:
-    entries = count_entries_from_description(description_path)
+    specs = object_specs_from_description(description_path)
     objects: list[dict[str, object]] = []
     color_index = 0
 
-    for instrument_name, count in entries:
+    for spec in specs:
+        instrument_name = str(spec["instrument"])
+        count = int(spec["count"])
         if count <= 0:
             raise ValueError(f"Instrument count must be positive: {instrument_name}={count}")
         instrument = slugify_instrument(instrument_name)
+        description = spec.get("description")
+        prompt_hint = spec.get("prompt_hint")
         for number in range(1, count + 1):
             if color_index >= len(COLOR_ORDER):
                 raise ValueError(
@@ -130,14 +148,17 @@ def build_object_plan_from_description(description_path: Path) -> dict[str, list
                     f"{', '.join(format_color(color) for color in COLOR_ORDER)}."
                 )
             object_id = f"{instrument}_{number}"
+            object_description = str(description) if description else f"{instrument.replace('_', ' ')} player {number}"
             objects.append(
                 {
                     "object_id": object_id,
                     "instrument": instrument,
-                    "description": f"{instrument.replace('_', ' ')} player {number}",
+                    "description": object_description,
                     "color": COLOR_ORDER[color_index],
                 }
             )
+            if prompt_hint:
+                objects[-1]["prompt_hint"] = str(prompt_hint)
             color_index += 1
 
     if not objects:
@@ -216,7 +237,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--assets-root", type=Path, default=Path("outputs/video_assets"))
     parser.add_argument("--env-file", type=Path, default=Path(".env"))
-    parser.add_argument("--interval", type=float, default=0.5)
+    parser.add_argument("--interval", type=float, default=0.2)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument(
         "--skip-mask-edit",
@@ -226,6 +247,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mask-edit-model", default="gpt-image-2")
     parser.add_argument("--mask-edit-limit", type=int, default=0)
     parser.add_argument("--mask-edit-sleep", type=float, default=0.0)
+    parser.add_argument(
+        "--mask-fallback-on-moderation",
+        choices=["black", "copy-previous", "error"],
+        default="black",
+        help=(
+            "Fallback for GPT image edit moderation blocks. Default black avoids "
+            "copying stale object masks into later frames."
+        ),
+    )
     parser.add_argument("--separation-model-id", default="facebook/sam-audio-large-tv")
     parser.add_argument("--reranking-candidates", type=int, default=1)
     parser.add_argument("--max-frames", type=int, default=0)
@@ -370,6 +400,8 @@ def main() -> None:
             str(colored_frames_dir),
             "--model",
             args.mask_edit_model,
+            "--fallback-on-moderation",
+            args.mask_fallback_on_moderation,
         ]
         if not args.overwrite:
             edit_masks.append("--skip-existing")
@@ -486,6 +518,8 @@ def main() -> None:
             str(mucap_output_dir),
             "--caption_only",
             "true",
+            "--use_design_prompt",
+            "false",
             "--use_audio_feature",
             "true" if args.mucap_use_audio_feature else "false",
             "--use_rag",
