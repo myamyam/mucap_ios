@@ -13,10 +13,14 @@ def retrieve_rag_context(query_text: str, top_k=2, threshold=0.8):
         from langchain_openai import OpenAIEmbeddings
         from langchain_chroma import Chroma
     except ImportError as exc:
-        raise RuntimeError(
-            "RAG is enabled, but langchain-openai/langchain-chroma are not installed. "
-            "Run with --use_rag false for caption-only generation without RAG."
-        ) from exc
+        try:
+            from langchain_community.embeddings import OpenAIEmbeddings
+            from langchain_community.vectorstores import Chroma
+        except ImportError:
+            raise RuntimeError(
+                "RAG is enabled, but LangChain/Chroma dependencies are not installed. "
+                "Run with --use_rag false for caption-only generation without RAG."
+            ) from exc
 
     persist_directory = join(dirname(__file__), 'rag', 'ragdb')
 
@@ -39,7 +43,10 @@ def retrieve_rag_context(query_text: str, top_k=2, threshold=0.8):
         search_kwargs={"k": top_k, "score_threshold": threshold}
     )
 
-    docs = retriever.get_relevant_documents(query_text)
+    if hasattr(retriever, "invoke"):
+        docs = retriever.invoke(query_text)
+    else:
+        docs = retriever.get_relevant_documents(query_text)
     if not docs:
         print(f"⚠ No documents found above similarity threshold {threshold}")
 
@@ -266,6 +273,8 @@ def annotate_and_show(wav_path, use_design_prompt=True,
     if use_audio_feature:
         # lo
         feature_path = join(dirname(__file__), '..', 'music_features', 'music_features.csv')
+        if not os.path.exists(feature_path):
+            feature_path = join(dirname(__file__), '..', 'music_features.csv')
         audio_feature_df = pd.read_csv(feature_path)
         wav_filename = basename(wav_path)
 
