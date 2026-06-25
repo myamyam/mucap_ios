@@ -2,7 +2,7 @@ import argparse
 import os
 import traceback
 from multiprocessing import cpu_count, Pool
-from os.path import join, dirname, basename, abspath
+from os.path import join, dirname, basename, abspath, splitext
 from glob import glob
 
 from dotenv import load_dotenv
@@ -13,9 +13,9 @@ import random
 
 
 def process_file(wav_path, input_dir, output_dir, design_prompt, use_audio_feature, use_rag, caption_only, model):
-    file = wav_path.replace(input_dir, '')
-    dir_path = join(output_dir, dirname(file))
-    os.makedirs(join(dir_path, '..'), exist_ok=True)
+    relative_dir = dirname(wav_path)
+    file_stem = splitext(basename(wav_path))[0]
+    dir_path = join(output_dir, relative_dir, file_stem)
     os.makedirs(dir_path, exist_ok=True)
 
     postfix = f"{'dp' if design_prompt else ''}_{'af' if use_audio_feature else ''}_{'rag' if use_rag else ''}"
@@ -79,7 +79,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
 
-    default_input_dir = join(dirname(__file__), '..', "dataset")
+    default_input_dir = join(dirname(__file__), '..', "input")
     default_output_dir = join(dirname(__file__), '..', "output")
 
     def str2bool(v):

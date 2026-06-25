@@ -2,14 +2,24 @@ __pycache__/
 .vscode/
 *.pyc
 
-pretrained_models
-*.pb
-.idea
+.venv/
+.venv310/
+.idea/
 .env
-__spleeter_temp__
 
-dataset
+pretrained_models/
+*.pb
+__spleeter_temp__/
+
+dataset/
 !dataset/.gitignore
+human_annotation/
+music_features.csv
+annotations.csv
 
-output
-outpu2
+logs/
+input/
+output/
+outpu2/
+output_rag_smoke_test/
+new_data/

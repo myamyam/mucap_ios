@@ -4,7 +4,10 @@ from os.path import join, basename, splitext, dirname
 from dotenv import load_dotenv
 from openai import OpenAI
 from mucap.audio import encode_audio, wav_to_mp3
+from mucap.caption_skeleton_patch import augment_feature_str
 from mucap.tokends2caption import tokens_to_caption
+
+load_dotenv(join(dirname(__file__), '..', '.env'))
 
 
 def retrieve_rag_context(query_text: str, top_k=2, threshold=0.8):
@@ -22,7 +25,7 @@ def retrieve_rag_context(query_text: str, top_k=2, threshold=0.8):
                 "Run with --use_rag false for caption-only generation without RAG."
             ) from exc
 
-    persist_directory = join(dirname(__file__), 'rag', 'ragdb')
+    persist_directory = join(dirname(__file__), 'rag', 'ragdb_skeleton')
 
     vectorstore = Chroma(persist_directory=persist_directory,
                          embedding_function=OpenAIEmbeddings(model="text-embedding-3-large"))
@@ -128,13 +131,19 @@ def prompt_end_second(duration_sec):
 
 
 def build_prompt_rhythm(audio_b64: str, design_prompt=None, music_features=None,
-                        use_rag=None, duration_sec=14.0):
+                        use_rag=None, duration_sec=14.0, wav_path=None):
 
     if music_features is not None:
         feature_str = interpret_music_features(music_features)
     else:
         feature_str = "3) [Context]: - No music features available; rely only on the audio."
 
+    if wav_path:
+        feature_str = augment_feature_str(
+            feature_str,
+            wav_path,
+            runtime_features=music_features,
+        )
 
     if use_rag:
         # print("🔍 Retrieving extra context from vector DB...")
@@ -315,7 +324,8 @@ def annotate_and_show(wav_path, use_design_prompt=True,
                           'envelop': features['envelope'],
                           'onset_strength': features['onset_strength'],
                           'resonance': features['resonance'],
-                          'top5_instruments': instrument_predictions}
+                          'top5_instruments': instrument_predictions,
+                          'notes': features.get('notes', [])}
     else:
         music_features = None
 
@@ -325,6 +335,7 @@ def annotate_and_show(wav_path, use_design_prompt=True,
         music_features,
         use_rag,
         duration_sec=duration_sec,
+        wav_path=wav_path,
     )
     
     # text_only = next(

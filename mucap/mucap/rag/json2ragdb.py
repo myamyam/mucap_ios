@@ -7,6 +7,11 @@ from os.path import abspath, dirname, join
 import pandas as pd
 from dotenv import load_dotenv
 
+from mucap.rag.rag_skeleton_patch import (
+    annotation_consensus_summary,
+    build_skeleton_text,
+)
+
 
 def build_documents(root_dir, require_nonempty_description=False):
     from langchain_core.documents import Document
@@ -20,6 +25,7 @@ def build_documents(root_dir, require_nonempty_description=False):
 
     music_feature_df = pd.read_csv(music_feature_path, encoding="utf-8")
     feature_names = set(music_feature_df["file_name"].tolist())
+    feature_rows = music_feature_df.set_index("file_name", drop=False)
 
     docs = []
     stats = {
@@ -71,8 +77,13 @@ def build_documents(root_dir, require_nonempty_description=False):
                 text_arr.append(value["text"][0])
 
         annotation = " ".join(text_arr)
+        feature_row = feature_rows.loc[filename]
+        skeleton_txt = build_skeleton_text(feature_row)
+        consensus_txt = annotation_consensus_summary(text_arr)
         row_txt = (
             f"Music Feature: {music_feature_txt}\n"
+            f"{skeleton_txt}\n"
+            f"{consensus_txt}\n"
             f"Music Feeling: {music_feeling_txt}\n"
             f"Annotation: {annotation}"
         )
