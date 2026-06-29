@@ -43,7 +43,7 @@ def process_file(wav_path, input_dir, output_dir, design_prompt, use_audio_featu
 def batch_process(input_dir, output_dir, design_prompt,
                   use_audio_feature=True, use_rag=True,
                   shuffle=False, n=-1, num_workers=None,
-                  caption_only=False, model="gpt-audio"):
+                  caption_only=False, model="gpt-audio-1.5"):
     # get with glob
     input_dir = abspath(input_dir)
     output_dir = abspath(output_dir)
@@ -91,7 +91,7 @@ if __name__ == "__main__":
     parser.add_argument("--use_design_prompt", type=str2bool, default=True, help="Whether to use the design prompt")
     parser.add_argument("--use_audio_feature", type=str2bool, default=True, help="Whether to use audio features")
     parser.add_argument("--use_rag", type=str2bool, default=True, help="Whether to use RAG")
-    parser.add_argument("--model", type=str, default="gpt-audio", help="OpenAI audio-capable chat model")
+    parser.add_argument("--model", type=str, default="gpt-audio-1.5", help="OpenAI audio-capable chat model")
     parser.add_argument(
         "--caption_only",
         type=str2bool,

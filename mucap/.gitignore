@@ -1,6 +1,11 @@
 __pycache__/
 .vscode/
 *.pyc
+*.mp4
+*.wav
+*.mp3
+*.zip
+*.tar.gz
 
 .venv/
 .venv310/
@@ -23,3 +28,7 @@ output/
 outpu2/
 output_rag_smoke_test/
 new_data/
+mucap/*_2.py
+mucap/rag/ragdb/
+mucap/rag/ragdb_skeleton/
+mucap/rag/ragdb_skeleton_wrong/

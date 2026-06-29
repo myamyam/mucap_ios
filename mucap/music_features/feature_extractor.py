@@ -121,18 +121,19 @@ class AudioFeatureExtraction:
             wait=0
         )
 
+        f0, _, _ = librosa.pyin(
+            y,
+            fmin=librosa.note_to_hz("C2"),
+            fmax=librosa.note_to_hz("C7"),
+            frame_length=2048,
+            hop_length=512
+        )
+
         # Extract pitch for each onset
         notes = []
         for i, onset_time in enumerate(onset_frames):
             # Get pitch at onset time
             onset_frame = librosa.time_to_frames(onset_time, sr=sr, hop_length=512)
-            f0, voiced_flag, voiced_prob = librosa.pyin(
-                y,
-                fmin=librosa.note_to_hz("C2"),
-                fmax=librosa.note_to_hz("C7"),
-                frame_length=2048,
-                hop_length=512
-            )
 
             if onset_frame < len(f0) and not np.isnan(f0[onset_frame]):
                 pitch = f0[onset_frame]

@@ -33,16 +33,10 @@ from dataclasses import dataclass
 
 import numpy as np
 
-try:
-    from .sound_to_skeleton_core import (
-        Skeleton, ConsensusModel,
-        count_syllables, normalize_transcript,
-    )
-except ImportError:
-    from sound_to_skeleton_core import (
-        Skeleton, ConsensusModel,
-        count_syllables, normalize_transcript,
-    )
+from mucap.sound_to_skeleton_core import (
+    Skeleton, ConsensusModel,
+    count_syllables, normalize_transcript,
+)
 
 # ---- 조인 키 / 컬럼 이름 (실제 파일에서 다르면 여기만 수정) ----------------
 FEATURE_ID_COL = "file_name"      # audio feature CSV의 음원 식별 컬럼
@@ -71,14 +65,15 @@ def hz_to_midi(hz: float) -> int:
 #    이후 파이프라인은 동일하게 동작한다.
 # ============================================================================
 
-def parse_notes_field(notes) -> list[dict]:
-    """CSV notes 문자열 또는 런타임 dict 리스트를 안전하게 정규화."""
-    if isinstance(notes, list):
-        return [n for n in notes if isinstance(n, dict)]
-    if not isinstance(notes, str) or not notes.strip():
+def parse_notes_field(notes_str) -> list[dict]:
+    """notes 문자열을 dict 리스트로 안전 파싱.
+    "[{'onset_time':..,'pitch':..,'duration':..}, ...]" 형식."""
+    if isinstance(notes_str, list):
+        return [n for n in notes_str if isinstance(n, dict)]
+    if not notes_str or not notes_str.strip():
         return []
     try:
-        parsed = ast.literal_eval(notes)
+        parsed = ast.literal_eval(notes_str)
         if isinstance(parsed, list):
             return [n for n in parsed if isinstance(n, dict)]
     except (ValueError, SyntaxError):
@@ -166,21 +161,27 @@ def _is_percussive_from_feature(row: dict, durations: list[float],
     return False
 
 
-def _parse_top5(value) -> list[tuple[str, float]]:
-    """CSV 문자열 또는 런타임 목록을 (악기, 점수) 목록으로 정규화."""
-    if isinstance(value, (list, tuple)):
-        parsed = value
-    elif isinstance(value, str) and value.strip():
-        try:
-            parsed = ast.literal_eval(value)
-        except (ValueError, SyntaxError):
-            return []
-    else:
+def _parse_top5(s) -> list[tuple[str, float]]:
+    """top5_instruments string/list -> [(name, score), ...]."""
+    if isinstance(s, list):
+        out = []
+        for item in s:
+            try:
+                if isinstance(item, dict):
+                    name = item.get("instrument") or item.get("name") or item.get("label")
+                    score = item.get("score") or item.get("probability") or item.get("confidence")
+                else:
+                    name, score = item
+                out.append((str(name).lower(), float(score)))
+            except (TypeError, ValueError):
+                continue
+        return out
+    if not s or not s.strip():
         return []
-
     try:
+        parsed = ast.literal_eval(s)
         return [(str(n).lower(), float(sc)) for n, sc in parsed]
-    except (TypeError, ValueError):
+    except (ValueError, SyntaxError):
         return []
 
 

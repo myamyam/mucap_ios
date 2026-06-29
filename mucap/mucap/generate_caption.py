@@ -1,29 +1,181 @@
-import argparse, json, os, re, wave
+import argparse, json, re
 import pandas as pd
+import _osx_support
+from os import path
 from os.path import join, basename, splitext, dirname
 from dotenv import load_dotenv
 from openai import OpenAI
-from mucap.audio import encode_audio, wav_to_mp3
-from mucap.caption_skeleton_patch import augment_feature_str
-from mucap.tokends2caption import tokens_to_caption
+from os.path import dirname, basename
 
-load_dotenv(join(dirname(__file__), '..', '.env'))
+try:
+    from langchain_openai import OpenAIEmbeddings
+    from langchain_chroma import Chroma
+except ImportError:
+    from langchain_community.embeddings import OpenAIEmbeddings
+    from langchain_community.vectorstores import Chroma
+
+try:
+    from extract_spectogram import save_spectrogram
+except ImportError:
+    save_spectrogram = None
+from mucap.audio import encode_audio, wav_to_mp3
+from mucap.render.plot_render import render_plot_video
+from mucap.render.circle_render import render_plot_video as render_circle
+from mucap.tokends2caption import tokens_to_caption
+try:
+    from mucap.video_render import render_video
+except ImportError:
+    render_video = None
+try:
+    from mucap.visualize import visualize
+except ImportError:
+    visualize = None
+from mucap.caption_skeleton_patch import augment_feature_str
+from music_features.feature_extractor import AudioFeatureExtraction
+
+
+def audio_feature_key(path_or_name):
+    fname = basename(path_or_name)
+    return fname[len("fixed_"):] if fname.startswith("fixed_") else fname
+
+
+def audio_duration_seconds(wav_path, default=14.0):
+    if not wav_path:
+        return default
+    try:
+        import wave
+        with wave.open(wav_path, "rb") as wf:
+            return wf.getnframes() / float(wf.getframerate())
+    except Exception:
+        return default
+
+
+def extract_features(audio_path, output_json, max_events=64):
+    import librosa
+    import numpy as np
+
+    y, sr = librosa.load(audio_path, sr=22050, mono=True)
+    duration = float(librosa.get_duration(y=y, sr=sr))
+    rms = librosa.feature.rms(y=y, frame_length=2048, hop_length=512)[0]
+    times = librosa.frames_to_time(range(len(rms)), sr=sr, hop_length=512)
+    peak = float(np.max(rms)) if len(rms) else 0.0
+    norm = rms / peak if peak > 0 else rms
+
+    if len(times) and max_events:
+        idx = np.linspace(0, len(times) - 1, min(int(max_events), len(times)), dtype=int)
+    else:
+        idx = []
+
+    payload = {
+        "duration": duration,
+        "events": [
+            {"time": float(times[i]), "energy": float(norm[i])}
+            for i in idx
+        ],
+    }
+    with open(output_json, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+
+
+def _caption_units(caption_text):
+    matches = re.findall(r"\[([0-9]+(?:\.[0-9]+)?)\]\s*([^\[]+)", caption_text)
+    units = [(float(t), txt.strip()) for t, txt in matches if txt.strip()]
+    return units or [(0.0, caption_text.strip())]
+
+
+def _wrap_text(draw, text, font, max_width):
+    lines, current = [], ""
+    for ch in text:
+        trial = current + ch
+        if draw.textbbox((0, 0), trial, font=font)[2] <= max_width or not current:
+            current = trial
+        else:
+            lines.append(current)
+            current = ch
+    if current:
+        lines.append(current)
+    return lines
+
+
+def render_text_from_json_no_moviepy(text, feature_json, audio_path, output_path,
+                                     window_size=14):
+    import os
+    import subprocess
+    import tempfile
+
+    import imageio
+    import imageio_ffmpeg
+    import librosa
+    import numpy as np
+    from PIL import Image, ImageDraw, ImageFont
+
+    with open(feature_json, "r", encoding="utf-8") as f:
+        feature_data = json.load(f)
+
+    duration = float(feature_data.get("duration") or 0.0)
+    if duration <= 0:
+        y, sr = librosa.load(audio_path, sr=22050, mono=True)
+        duration = float(librosa.get_duration(y=y, sr=sr))
+
+    events = feature_data.get("events", [])
+    units = _caption_units(text)
+    width, height, fps = 1280, 720, 24
+    font_path = join(dirname(__file__), "fonts", "Pretendard-Bold.otf")
+    font = ImageFont.truetype(font_path, 78) if os.path.exists(font_path) else ImageFont.load_default()
+    small_font = ImageFont.truetype(font_path, 30) if os.path.exists(font_path) else ImageFont.load_default()
+
+    temp_video = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False).name
+    try:
+        writer = imageio.get_writer(temp_video, fps=fps, codec="libx264", quality=8)
+        total_frames = max(1, int(duration * fps))
+        for frame_idx in range(total_frames):
+            t = frame_idx / fps
+            active = [txt for ts, txt in units if ts <= t]
+            visible = "".join(active)[-window_size:] if active else units[0][1]
+
+            energy = 0.0
+            if events:
+                nearest = min(events, key=lambda e: abs(float(e.get("time", 0.0)) - t))
+                energy = float(nearest.get("energy", 0.0))
+            pulse = int(40 + energy * 120)
+
+            img = Image.new("RGB", (width, height), (8, 10, 16))
+            draw = ImageDraw.Draw(img)
+            draw.ellipse(
+                (width // 2 - 190 - pulse, height // 2 - 190 - pulse,
+                 width // 2 + 190 + pulse, height // 2 + 190 + pulse),
+                outline=(80, 180, 255),
+                width=10,
+            )
+
+            lines = _wrap_text(draw, visible, font, width - 220)
+            line_h = 92
+            y0 = height // 2 - (len(lines) * line_h) // 2
+            for i, line in enumerate(lines):
+                bbox = draw.textbbox((0, 0), line, font=font)
+                x = (width - (bbox[2] - bbox[0])) // 2
+                draw.text((x, y0 + i * line_h), line, font=font, fill=(245, 248, 255))
+            draw.text((42, height - 60), f"{t:05.2f}s", font=small_font, fill=(145, 160, 180))
+            writer.append_data(np.asarray(img))
+        writer.close()
+
+        ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
+        subprocess.run([
+            ffmpeg, "-y",
+            "-i", temp_video,
+            "-i", audio_path,
+            "-c:v", "copy",
+            "-c:a", "aac",
+            "-shortest",
+            output_path,
+        ], check=True)
+    finally:
+        if os.path.exists(temp_video):
+            os.remove(temp_video)
 
 
 def retrieve_rag_context(query_text: str, top_k=2, threshold=0.8):
     """Retrieve relevant context using Chroma + OpenAI embeddings with similarity threshold."""
-    try:
-        from langchain_openai import OpenAIEmbeddings
-        from langchain_chroma import Chroma
-    except ImportError as exc:
-        try:
-            from langchain_community.embeddings import OpenAIEmbeddings
-            from langchain_community.vectorstores import Chroma
-        except ImportError:
-            raise RuntimeError(
-                "RAG is enabled, but LangChain/Chroma dependencies are not installed. "
-                "Run with --use_rag false for caption-only generation without RAG."
-            ) from exc
 
     persist_directory = join(dirname(__file__), 'rag', 'ragdb_skeleton')
 
@@ -51,7 +203,8 @@ def retrieve_rag_context(query_text: str, top_k=2, threshold=0.8):
     else:
         docs = retriever.get_relevant_documents(query_text)
     if not docs:
-        print(f"⚠ No documents found above similarity threshold {threshold}")
+        print(f"Warning: No documents found above similarity threshold {threshold}")
+        return None
 
     output = ''
     for i, doc in enumerate(docs):
@@ -107,31 +260,8 @@ def interpret_music_features(music_features):
         f"envelope: {envelope:.2f}, onset_strength: {onset_strength:.2f}, resonance: {resonance:.2f}"
     )
 
-def audio_duration_seconds(wav_path):
-    try:
-        with wave.open(wav_path, "rb") as audio:
-            frames = audio.getnframes()
-            sample_rate = audio.getframerate()
-            return frames / float(sample_rate)
-    except (wave.Error, OSError):
-        try:
-            import soundfile as sf
-        except ImportError as exc:
-            raise RuntimeError(
-                "Could not read WAV duration with wave, and soundfile is not installed."
-            ) from exc
-        info = sf.info(wav_path)
-        return info.frames / float(info.samplerate)
-
-
-def prompt_end_second(duration_sec):
-    if duration_sec <= 0:
-        raise ValueError(f"Audio duration must be positive, got {duration_sec}")
-    return max(0.0, duration_sec - min(0.2, duration_sec * 0.1))
-
-
 def build_prompt_rhythm(audio_b64: str, design_prompt=None, music_features=None,
-                        use_rag=None, duration_sec=14.0, wav_path=None):
+                        use_rag=None, wav_path=None):
 
     if music_features is not None:
         feature_str = interpret_music_features(music_features)
@@ -156,69 +286,28 @@ def build_prompt_rhythm(audio_b64: str, design_prompt=None, music_features=None,
                 f"{rag_context}\n"
             )
 
-    duration_sec = float(duration_sec)
-    end_sec = prompt_end_second(duration_sec)
-
-    hangul_examples = (
-        "\ucc0c\uc789, \ub545, \ub69c\uc6c5, \uc0bd\ube44\ube45, "
-        "\ub530\ub77c\ub77c, \uc9dc\ub77c, \ucfe0, \ud0c1, \ub760\ub9ac\ub9c1, "
-        "\uc73c\uc545, \ud06c\uc545, \ucc59, \uc288\uc6b1, \ud37d, \ucfe0\uc6c5"
-    )
     text = (
         "You are an audio subtitle writer. Listen to the audio and create sound-mimetic "
         "captions using Hangul Korean onomatopoeia only.\n"
-        f"Audio duration: {duration_sec:.1f} seconds. End timestamps must be between 0.00 "
-        f"and {end_sec:.1f} seconds.\n"
+        "Audio duration: 14.0 seconds. End timestamps must be between 0.00 and 13.8 seconds.\n"
         f"{feature_str}\n"
         "Output rules are strict:\n"
         "- Return exactly one line and nothing else.\n"
         "- Every caption unit must match this pattern: [seconds] HangulText\n"
         "- Use spaces between units, for example: "
-        "[0.00] \ucfe0 [0.45] \ud0c1 [0.80] \ub450\ub465 "
-        "[1.25] \ucc0c\uc789 [1.70] \ud321\n"
+        "[0.00] 쿠 [0.45] 탁 [0.80] 두둥 [1.25] 찌잉 [1.70] 팡\n"
         "- Use Hangul Korean onomatopoeia such as: "
-        f"{hangul_examples}.\n"
-        "- For fight scenes, prefer harsher battle shouts, sword clashes, air slashes, "
-        "and heavy hit syllables when the audio supports them.\n"
+        "찌잉, 땅, 뚜웅, 삽비빅, 따라라, 짜라, 쿠, 탁, 띠리링, "
+        "으악, 크악, 챙, 슈욱, 퍽, 쿠웅.\n"
+        "- For music, prefer syllables that follow pitch, sustain, attack, and rests: "
+        "딩, 띵, 또로롱, 따란, 찌잉, 두둥, 쿵, 탁, 사락, 휘잉.\n"
         "- Do not write explanations, greetings, markdown, English words, romanized Korean, "
-        "Japanese, adjectives, or extra symbols.\n"
+        "Japanese, Chinese characters, Hanja, adjectives, or extra symbols.\n"
         "- Do not say you will analyze the audio. Directly output the timestamped caption line.\n"
         "- Use as many units as needed to match audible rhythm and sound events.\n"
+        "- If the context includes a Rapid onset hint, follow it with repeated close-timestamp Hangul units instead of summarizing rapid notes into one token.\n"
         "- If unsure, still output a short valid caption line with timestamps.\n"
         f"Optional style guide: {design_prompt or 'No guide'}"
-    )
-
-    return [
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": text},
-                {"type": "input_audio",
-                 "input_audio": {"data": audio_b64, "format": "mp3"}}
-            ],
-        }
-    ]
-
-    text = (
-        "1) [Role]: 당신은 소리를 듣고 실제 청감에 가까운 한글 의성어 자막을 쓰는 자막 제작자입니다. 입으로 따라 말할 수 있는 한글 음절로 소리의 질감, 리듬, 세기를 흉내 내세요.\n"
-        f"2) [Objective]: {duration_sec:.1f}초 길이의 오디오를 듣고, 실제 소리의 타이밍과 질감에 맞는 한글 의성어 자막으로 전사하세요. 예: 찌잉, 땅, 뚜웅, 삐비빅, 따라라, 짜라, 쿵, 탁, 띠리링. "
-        "리듬, 강도, 음색, 지속시간을 고려하고, 영상 위에 올라갈 자막처럼 자연스럽고 생생하게 쓰세요. "
-        "추상적인 반복보다 실제로 들리는 소리를 가장 잘 흉내 내는 한글 음절을 고르세요.\n"
-        f"{feature_str}\n"
-        "3) [Format]\n"
-        "   - Each unit should follow `[sec] 한글의성어` (e.g., `[0.00] 쿵`), separated by spaces\n"
-        "   - Except for timestamp numbers inside brackets, output Hangul Korean onomatopoeia only\n"
-        "   - Do not use English words, romanized Korean such as ttang/kung/jjiing, Japanese, adjectives, extra symbols, or newlines; output only one line\n"
-        f"   - Write time-aligned Korean syllabic captions only between 0.00 and {end_sec:.1f} seconds.\n"
-        "   - Use as many caption units as needed to match the audible rhythm and sound events.\n"
-        "   - Do not force a fixed number of units.\n"
-        f"   - If the sound continues throughout the clip, distribute captions across the full duration from the beginning to near {end_sec:.1f}s.\n"
-        "   - Do not stop early while audible sound continues.\n"
-        "   - Avoid timestamps outside the audio duration.\n"
-        "   - Choose Korean consonant and vowel combinations that connect smoothly with preceding caption units\n"
-        "   - Mimic the actual rhythm and sound as closely as possible\n"
-        f"4) [Guide] {design_prompt or 'No guide'}"
-        "5) [Example] [0.00] 둥 [0.45] 탕 [0.80] 두둥 [1.25] 찌잉 [1.70] 팡"
         # "6) [Reference rules]\n"
         # "- For loud and short sounds, use sharp transient syllables like 'ttak', 'tchak', 'jjang'"
         # "- For low, sustained tones, use forms like 'doong', 'woong', 'boong'"
@@ -255,8 +344,93 @@ def parse_caption(line: str):
     return [(float(t), tok) for t, tok in token_regex.findall(line)]
 
 
+def _is_hangul_token(token: str) -> bool:
+    return bool(re.fullmatch(r"[가-힣]+", token))
+
+
+def caption_validation_error(caption: str, wav_path: str) -> str | None:
+    if "..." in caption or "…" in caption:
+        return "ellipsis/omission marker is not allowed"
+
+    tokens = parse_caption(caption)
+    if not tokens:
+        return "no timestamped caption tokens"
+
+    first_time = min(t for t, _ in tokens)
+    last_time = max(t for t, _ in tokens)
+    duration = audio_duration_seconds(wav_path)
+
+    if first_time > 0.35:
+        return "caption omits the beginning"
+    if duration > 4.0 and last_time < duration * 0.75:
+        return "caption ends too early"
+
+    seen_times = set()
+    for t, _ in tokens:
+        key = round(t, 2)
+        if key in seen_times:
+            return "duplicate timestamp found"
+        seen_times.add(key)
+
+    bad_tokens = [tok for _, tok in tokens if not _is_hangul_token(tok)]
+    if bad_tokens:
+        return f"non-Hangul token found: {bad_tokens[0]}"
+
+    return None
+
+
+def append_caption_retry_instruction(messages, reason: str, wav_path: str) -> None:
+    correction = (
+        "\n\nCorrection required. The previous caption was invalid because: "
+        f"{reason}. Regenerate from scratch. Do not summarize or use ellipses. "
+        "Use only Hangul syllables inside caption tokens. Keep the caption natural "
+        "and follow the audible rhythm from beginning to end."
+    )
+    for content in messages[0]["content"]:
+        if content.get("type") == "text":
+            content["text"] += correction
+            return
+
+
+def sanitize_caption(caption: str, wav_path: str) -> str:
+    tokens = parse_caption(caption)
+    duration = audio_duration_seconds(wav_path)
+    end_limit = max(0.0, duration - 0.2)
+
+    if not tokens:
+        return "[0.00] 딩"
+
+    cleaned = []
+    prev_t = -1.0
+    for t, tok in sorted(tokens, key=lambda item: item[0]):
+        if not _is_hangul_token(tok):
+            tok = "딩"
+        t = max(0.0, min(float(t), end_limit))
+        if t <= prev_t:
+            adjusted = prev_t + 0.05
+            if adjusted > end_limit:
+                continue
+            t = adjusted
+        cleaned.append((t, tok))
+        prev_t = t
+
+    cleaned.sort(key=lambda item: item[0])
+    return " ".join(f"[{t:.2f}] {tok}" for t, tok in cleaned)
+
+
+def generate_valid_caption(model, messages, wav_path: str, max_attempts: int = 3) -> str:
+    caption = ""
+    for attempt in range(max_attempts):
+        caption = llm_api(model, messages, temp=0.5 if attempt else 0.7)
+        reason = caption_validation_error(caption, wav_path)
+        if reason is None:
+            return caption
+        append_caption_retry_instruction(messages, reason, wav_path)
+    return sanitize_caption(caption, wav_path)
+
+
 def annotate_and_show(wav_path, use_design_prompt=True,
-                      model="gpt-audio",
+                      model="gpt-audio-1.5",
                       use_audio_feature=True,
                       use_rag=True,
                       output_path=None,
@@ -264,28 +438,21 @@ def annotate_and_show(wav_path, use_design_prompt=True,
                       verbose=False,
                       caption_only=False):
 
-    duration_sec = audio_duration_seconds(wav_path)
     mp3_path = wav_to_mp3(wav_path)
     audio_b64 = encode_audio(mp3_path)
 
     if use_design_prompt:
         design_guide_path = join(dirname(__file__), 'prompt', 'design_guide.txt')
-        if os.path.exists(design_guide_path):
-            with open(design_guide_path, "r", encoding="utf-8") as f:
-                design_txt = f.read().strip()
-        else:
-            print(f"Warning: design guide not found; continuing without it: {design_guide_path}")
-            design_txt = None
+        with open(design_guide_path, "r", encoding="utf-8") as f:
+            design_txt = f.read().strip()
     else:
         design_txt = None
 
     if use_audio_feature:
         # lo
-        feature_path = join(dirname(__file__), '..', 'music_features', 'music_features.csv')
-        if not os.path.exists(feature_path):
-            feature_path = join(dirname(__file__), '..', 'music_features.csv')
+        feature_path = join(dirname(__file__), '..', 'music_features.csv')
         audio_feature_df = pd.read_csv(feature_path)
-        wav_filename = basename(wav_path)
+        wav_filename = audio_feature_key(wav_path)
 
         is_audio_feature_available = wav_filename in audio_feature_df['file_name'].values
 
@@ -304,18 +471,14 @@ def annotate_and_show(wav_path, use_design_prompt=True,
             instrument_predictions = audio_feature_df['top5_instruments'] if 'top5_instruments' in audio_feature_df else None
         else:
             print(f"Audio features not found for {wav_filename}, extracted features instead.")
-            try:
-                from music_features.feature_extractor import AudioFeatureExtraction
-            except ImportError as exc:
-                raise RuntimeError(
-                    "Audio feature extraction is enabled, but its optional dependencies "
-                    "(tensorflow/essentia) are not installed. Run with --use_audio_feature false "
-                    "for caption-only generation without feature extraction."
-                ) from exc
             audio_extractor = AudioFeatureExtraction()
 
             features = audio_extractor.extract_features(wav_path)
-            instrument_predictions = audio_extractor.predict_instrument_essentia(wav_path)
+            try:
+                instrument_predictions = audio_extractor.predict_instrument_essentia(wav_path)
+            except Exception as e:
+                print(f"Warning: instrument prediction failed; using piano fallback: {e}")
+                instrument_predictions = [("piano", 1.0)]
 
 
         music_features = {'volume': features['volume'],
@@ -329,14 +492,7 @@ def annotate_and_show(wav_path, use_design_prompt=True,
     else:
         music_features = None
 
-    messages = build_prompt_rhythm(
-        audio_b64,
-        design_txt,
-        music_features,
-        use_rag,
-        duration_sec=duration_sec,
-        wav_path=wav_path,
-    )
+    messages = build_prompt_rhythm(audio_b64, design_txt, music_features, use_rag, wav_path=wav_path)
     
     # text_only = next(
     # (item['text'] for item in messages[0]['content'] if item['type'] == 'text'), None
@@ -365,11 +521,8 @@ def annotate_and_show(wav_path, use_design_prompt=True,
         f.write(caption)
 
     if caption_only:
-        return out_json
+        return
 
-    from extract_spectogram import save_spectrogram
-    from mucap.render.plot_render import render_plot_video
-    from mucap.render.circle_render import render_plot_video as render_circle
 
     # visualize(mp3_path, output_path, tokens, font_dir='fonts', postfix=postfix, verbose=verbose)
     # render_video(mp3_path, tokens, output_path, hop=0.25, font_dir='fonts', fps=30, postfix=postfix, verbose=verbose)
@@ -456,10 +609,10 @@ def annotate_and_show(wav_path, use_design_prompt=True,
     from mucap.render.annotation_render import annotation_render
     
     # Load human annotation data
-    annotation_path = join(dirname(__file__), "rag", "mucap_annotation_fin.json")
+    annotation_path = join(dirname(__file__), "..", "human_annotation", "human_annotation.json")
     
     # Extract filename from wav_path to match with annotation data
-    wav_filename = basename(wav_path)
+    wav_filename = audio_feature_key(wav_path)
     
     # Find matching human annotation
     human_annotation_text = None
@@ -470,7 +623,7 @@ def annotate_and_show(wav_path, use_design_prompt=True,
         for item in annotation_data:
             audio_url = item['data']['audio']
             # Extract filename from URL
-            url_filename = audio_url.split('/')[-1]
+            url_filename = audio_feature_key(audio_url.split('/')[-1])
             
             if url_filename == wav_filename:
                 # Get the human annotation text
@@ -497,7 +650,10 @@ def annotate_and_show(wav_path, use_design_prompt=True,
         postfix="type4"
     )
 
-    save_spectrogram(mp3_path, output_path, sr=44100, postfix=postfix)
+    if save_spectrogram is not None:
+        save_spectrogram(mp3_path, output_path, sr=44100, postfix=postfix)
+    else:
+        print("Warning: extract_spectogram.py not found; skipping spectrogram output.")
 
 
 

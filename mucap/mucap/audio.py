@@ -9,7 +9,9 @@ def find_ffmpeg():
     if found:
         return found
 
-    candidates = []
+    candidates = [
+        str(Path("C:/tmp") / "win32" / "ffmpeg.exe"),
+    ]
     local_appdata = os.environ.get("LOCALAPPDATA")
     if local_appdata:
         candidates.extend(
@@ -33,7 +35,19 @@ def find_ffmpeg():
             )
             candidates.extend(glob.glob(str(Path(root) / "ffmpeg" / "bin" / "ffmpeg.exe")))
 
-    return next((path for path in candidates if Path(path).exists()), None)
+    found = next((path for path in candidates if Path(path).exists()), None)
+    if found:
+        return found
+
+    try:
+        import imageio_ffmpeg
+        found = imageio_ffmpeg.get_ffmpeg_exe()
+        if found and Path(found).exists():
+            return found
+    except Exception:
+        pass
+
+    return None
 
 
 FFMPEG = find_ffmpeg()

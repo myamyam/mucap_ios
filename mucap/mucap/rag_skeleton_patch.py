@@ -21,13 +21,9 @@ notes(이미 music_features.csv에 있음)에서 골격을 뽑아 LLM이 읽을 
 
 from __future__ import annotations
 
-# Skeleton 변환과 전사 분석 로직은 프로젝트 루트의 heuristic 패키지에서 공유한다.
-from heuristic.data_io import feature_row_to_skeleton
-from heuristic.sound_to_skeleton_core import (
-    count_syllables,
-    count_spacing_breaks,
-    looks_like_solfege,
-)
+# data_io / sound_to_text 는 같은 폴더(또는 PYTHONPATH)에 있어야 함
+from mucap.data_io import feature_row_to_skeleton, dominant_instrument
+from mucap.sound_to_skeleton_core import count_syllables, count_spacing_breaks, looks_like_solfege
 
 
 # ============================================================================

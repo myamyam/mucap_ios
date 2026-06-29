@@ -4,7 +4,7 @@ caption_skeleton_patch.py
 mucap/generate_caption.py 의 LLM 프롬프트에 '골격(Skeleton)'과 '합의도'를
 주입하는 패치. (목적: LLM 캡션을 골격·합의도로 개선)
 
-generate_caption.py 는 LLM(gpt-4o-audio-preview)이 음절을 생성하므로,
+generate_caption.py 는 audio-capable LLM이 음절을 생성하므로,
 우리는 음절을 직접 만들지 않고 '프롬프트에 텍스트로 정보를 더한다'.
 
 주입 지점 (generate_caption.py 의 실제 함수):
@@ -27,10 +27,8 @@ from os.path import join, dirname, basename
 
 import pandas as pd
 
-from mucap.rag.rag_skeleton_patch import (
-    annotation_consensus_summary,
-    build_skeleton_text,
-)
+from mucap.data_io import feature_row_to_skeleton, parse_notes_field
+from mucap.rag_skeleton_patch import build_skeleton_text, annotation_consensus_summary
 
 
 # music_features.csv 캐시 (배치 처리 시 매번 읽지 않도록)
@@ -38,10 +36,9 @@ _FEATURE_DF = None
 _FEATURE_CSV_PATH = None
 
 
-def _audio_key(path: str) -> str:
-    """MuCap annotation의 fixed_ 접두사를 제외한 공통 파일 식별자."""
-    name = basename(path)
-    return name[len("fixed_"):] if name.startswith("fixed_") else name
+def _audio_key(path_or_name: str) -> str:
+    fname = basename(path_or_name)
+    return fname[len("fixed_"):] if fname.startswith("fixed_") else fname
 
 
 def _load_feature_df(feature_csv_path: str) -> pd.DataFrame:
@@ -50,6 +47,103 @@ def _load_feature_df(feature_csv_path: str) -> pd.DataFrame:
         _FEATURE_DF = pd.read_csv(feature_csv_path)
         _FEATURE_CSV_PATH = feature_csv_path
     return _FEATURE_DF
+
+
+def build_rapid_onset_hint(feature_row,
+                           max_gap: float = 0.55,
+                           min_cluster_size: int = 4) -> str | None:
+    row = dict(feature_row)
+    notes = parse_notes_field(row.get("notes", ""))
+    if not notes:
+        return None
+
+    onsets = sorted(float(n.get("onset_time", 0.0)) for n in notes)
+    clusters = []
+    cur = [onsets[0]]
+    for onset in onsets[1:]:
+        if onset - cur[-1] <= max_gap:
+            cur.append(onset)
+        else:
+            if len(cur) >= min_cluster_size:
+                clusters.append(cur)
+            cur = [onset]
+    if len(cur) >= min_cluster_size:
+        clusters.append(cur)
+
+    if not clusters:
+        return None
+
+    cluster = max(clusters, key=len)
+    start, end = cluster[0], cluster[-1]
+    shown = ", ".join(f"{t:.2f}" for t in cluster[:10])
+    if len(cluster) > 10:
+        shown += ", ..."
+    return (
+        f"Rapid onset hint: {start:.2f}-{end:.2f}s has {len(cluster)} close onsets "
+        f"at [{shown}]. Represent this as repeated Hangul caption units with close "
+        "timestamps; do not summarize the rapid notes into one token."
+    )
+
+
+def build_audio_rapid_onset_hint(wav_path: str,
+                                 max_gap: float = 0.55,
+                                 min_cluster_size: int = 4) -> str | None:
+    try:
+        import librosa
+        y, sr = librosa.load(wav_path, sr=22050, mono=True)
+        onsets = librosa.onset.onset_detect(
+            y=y, sr=sr, units='time', backtrack=False
+        )
+        onsets = [float(t) for t in onsets]
+    except Exception:
+        return None
+
+    if not onsets:
+        return None
+
+    clusters = []
+    cur = [onsets[0]]
+    for onset in onsets[1:]:
+        if onset - cur[-1] <= max_gap:
+            cur.append(onset)
+        else:
+            if len(cur) >= min_cluster_size:
+                clusters.append(cur)
+            cur = [onset]
+    if len(cur) >= min_cluster_size:
+        clusters.append(cur)
+
+    if not clusters:
+        return None
+
+    clusters = sorted(clusters, key=lambda c: (c[0], -len(c)))[:2]
+    parts = []
+    for cluster in clusters:
+        shown = ", ".join(f"{t:.2f}" for t in cluster[:10])
+        if len(cluster) > 10:
+            shown += ", ..."
+        parts.append(
+            f"{cluster[0]:.2f}-{cluster[-1]:.2f}s has {len(cluster)} close onsets "
+            f"at [{shown}]"
+        )
+    return (
+        "Rapid onset hint from audio: " + "; ".join(parts) +
+        ". Represent these as repeated Hangul caption units with close timestamps; "
+        "do not summarize rapid repeated notes into one token."
+    )
+
+
+def _skeleton_text_with_rapid_hint(row: dict, wav_path: str | None = None) -> str:
+    text = build_skeleton_text(row)
+    hints = []
+    note_hint = build_rapid_onset_hint(row)
+    if note_hint:
+        hints.append(note_hint)
+    if wav_path:
+        audio_hint = build_audio_rapid_onset_hint(wav_path)
+        if audio_hint:
+            hints.append(audio_hint)
+    return text + (" | " + " | ".join(hints) if hints else "")
 
 
 def get_skeleton_text_for_file(wav_path: str,
@@ -71,14 +165,14 @@ def get_skeleton_text_for_file(wav_path: str,
         df = _load_feature_df(feature_csv_path)
         fname = _audio_key(wav_path)
         if 'file_name' in df.columns:
-            matched = df[df['file_name'].map(_audio_key) == fname]
+            matched = df[df['file_name'] == fname]
             if not matched.empty:
                 row = matched.iloc[0].to_dict()
                 if 'notes' in row and not pd.isna(row.get('notes')):
-                    return build_skeleton_text(row)
+                    return _skeleton_text_with_rapid_hint(row, wav_path)
 
     if runtime_features and runtime_features.get('notes'):
-        return build_skeleton_text(runtime_features)
+        return _skeleton_text_with_rapid_hint(runtime_features, wav_path)
     return None
 
 
@@ -93,9 +187,8 @@ def get_consensus_text_for_file(wav_path: str,
     """
     import json
     if annotation_json_path is None:
-        annotation_json_path = join(
-            dirname(__file__), '..', 'human_annotation', 'human_annotation.json'
-        )
+        annotation_json_path = join(dirname(__file__), '..',
+                                    'human_annotation', 'human_annotation.json')
     if not os.path.exists(annotation_json_path):
         return None
 
@@ -106,7 +199,7 @@ def get_consensus_text_for_file(wav_path: str,
             data = json.load(f)
         for item in data:
             audio_url = item.get('data', {}).get('audio', '')
-            if _audio_key(audio_url) != fname:
+            if _audio_key(audio_url.split('/')[-1]) != fname:
                 continue
             for ann in item.get('annotations', []):
                 for result in ann.get('result', []):
