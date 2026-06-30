@@ -263,6 +263,9 @@ def interpret_music_features(music_features):
 def build_prompt_rhythm(audio_b64: str, design_prompt=None, music_features=None,
                         use_rag=None, wav_path=None):
 
+    duration = audio_duration_seconds(wav_path)
+    end_timestamp = max(0.0, duration - 0.2)
+
     if music_features is not None:
         feature_str = interpret_music_features(music_features)
     else:
@@ -289,7 +292,8 @@ def build_prompt_rhythm(audio_b64: str, design_prompt=None, music_features=None,
     text = (
         "You are an audio subtitle writer. Listen to the audio and create sound-mimetic "
         "captions using Hangul Korean onomatopoeia only.\n"
-        "Audio duration: 14.0 seconds. End timestamps must be between 0.00 and 13.8 seconds.\n"
+        f"Audio duration: {duration:.2f} seconds. End timestamps must be between "
+        f"0.00 and {end_timestamp:.2f} seconds.\n"
         f"{feature_str}\n"
         "Output rules are strict:\n"
         "- Return exactly one line and nothing else.\n"
@@ -306,6 +310,10 @@ def build_prompt_rhythm(audio_b64: str, design_prompt=None, music_features=None,
         "- Do not say you will analyze the audio. Directly output the timestamped caption line.\n"
         "- Use as many units as needed to match audible rhythm and sound events.\n"
         "- If the context includes a Rapid onset hint, follow it with repeated close-timestamp Hangul units instead of summarizing rapid notes into one token.\n"
+        "- If repeated notes are truly uniform, repeating the same Hangul syllable is allowed; "
+        "when pitch, duration, loudness, attack, resonance, or rests change, reflect those "
+        "audible changes with a small related set of Hangul variants such as 딩, 띵, 딩잉, 띠링, 따랑. "
+        "Do not add variety unsupported by the audio.\n"
         "- If unsure, still output a short valid caption line with timestamps.\n"
         f"Optional style guide: {design_prompt or 'No guide'}"
         # "6) [Reference rules]\n"
@@ -332,7 +340,7 @@ def llm_api(model, messages, temp=0.7):
     client = OpenAI()
     r = client.chat.completions.create(
         model=model, messages=messages, temperature=temp,
-        max_tokens=256, top_p=1, frequency_penalty=0, presence_penalty=0
+        max_tokens=512, top_p=1, frequency_penalty=0, presence_penalty=0
     )
 
     return r.choices[0].message.content.strip()
@@ -429,6 +437,28 @@ def generate_valid_caption(model, messages, wav_path: str, max_attempts: int = 3
     return sanitize_caption(caption, wav_path)
 
 
+def caption_ends_too_early(caption: str, wav_path: str,
+                           min_coverage: float = 0.75) -> bool:
+    tokens = parse_caption(caption)
+    if not tokens:
+        return False
+
+    duration = audio_duration_seconds(wav_path)
+    if duration <= 4.0:
+        return False
+
+    last_time = max(t for t, _ in tokens)
+    return last_time < duration * min_coverage
+
+
+def generate_caption_with_end_retry(model, messages, wav_path: str) -> str:
+    caption = llm_api(model, messages)
+    if caption_ends_too_early(caption, wav_path):
+        append_caption_retry_instruction(messages, "caption ends too early", wav_path)
+        caption = llm_api(model, messages, temp=0.5)
+    return caption
+
+
 def annotate_and_show(wav_path, use_design_prompt=True,
                       model="gpt-audio-1.5",
                       use_audio_feature=True,
@@ -500,7 +530,7 @@ def annotate_and_show(wav_path, use_design_prompt=True,
     # print("🔎 Prompt length:", len(text_only.split()) if text_only else "N/A")
     # print("🔍 Prompt preview:\n", text_only[:500], "...")  # Preview only the beginning
 
-    caption = llm_api(model, messages)
+    caption = generate_caption_with_end_retry(model, messages, wav_path)
 
     messages[0]["content"] = [c for c in messages[0]["content"]
                               if c["type"] != "input_audio"]

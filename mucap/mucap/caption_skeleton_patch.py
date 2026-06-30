@@ -49,6 +49,36 @@ def _load_feature_df(feature_csv_path: str) -> pd.DataFrame:
     return _FEATURE_DF
 
 
+def _sample_cluster_indices(size: int, max_items: int = 12) -> list[int]:
+    if size <= max_items:
+        return list(range(size))
+
+    head = list(range(min(4, size)))
+    tail = list(range(max(0, size - 4), size))
+    remaining = max_items - len(set(head + tail))
+    middle = []
+    if remaining > 0:
+        center = size // 2
+        start = center - remaining // 2
+        start = max(len(head), start)
+        start = min(start, max(len(head), size - len(tail) - remaining))
+        middle = list(range(start, start + remaining))
+
+    return sorted(set(head + middle + tail))
+
+
+def _format_sampled_cluster_times(cluster: list[float]) -> str:
+    indices = _sample_cluster_indices(len(cluster))
+    pieces = []
+    previous = None
+    for index in indices:
+        if previous is not None and index - previous > 1:
+            pieces.append("...")
+        pieces.append(f"{cluster[index]:.2f}")
+        previous = index
+    return ", ".join(pieces)
+
+
 def build_rapid_onset_hint(feature_row,
                            max_gap: float = 0.55,
                            min_cluster_size: int = 4) -> str | None:
@@ -75,22 +105,28 @@ def build_rapid_onset_hint(feature_row,
 
     cluster = max(clusters, key=len)
     start, end = cluster[0], cluster[-1]
-    shown = ", ".join(f"{t:.2f}" for t in cluster[:10])
-    if len(cluster) > 10:
-        shown += ", ..."
+    shown = _format_sampled_cluster_times(cluster)
     return (
         f"Rapid onset hint: {start:.2f}-{end:.2f}s has {len(cluster)} close onsets "
-        f"at [{shown}]. Represent this as repeated Hangul caption units with close "
-        "timestamps; do not summarize the rapid notes into one token."
+        f"at sampled timestamps [{shown}]. Ellipses inside timestamp lists mean "
+        "additional detected onsets continue between the shown timestamps; do not "
+        "treat omitted timestamps as silence or leave long gaps while audible notes "
+        "continue. Represent this as repeated Hangul caption units with close "
+        "timestamps; do not summarize the rapid notes into one token. If the notes are "
+        "truly uniform, the same syllable may repeat; if pitch, duration, loudness, attack, "
+        "resonance, or rests change, use a small related set of Hangul variants without "
+        "adding unsupported variety."
     )
 
 
 def build_audio_rapid_onset_hint(wav_path: str,
                                  max_gap: float = 0.55,
-                                 min_cluster_size: int = 4) -> str | None:
+                                 min_cluster_size: int = 4,
+                                 phrase_mode: bool = False) -> str | None:
     try:
         import librosa
         y, sr = librosa.load(wav_path, sr=22050, mono=True)
+        duration = len(y) / sr if sr else 0.0
         onsets = librosa.onset.onset_detect(
             y=y, sr=sr, units='time', backtrack=False
         )
@@ -116,20 +152,61 @@ def build_audio_rapid_onset_hint(wav_path: str,
     if not clusters:
         return None
 
-    clusters = sorted(clusters, key=lambda c: (c[0], -len(c)))[:2]
+    clusters = sorted(clusters, key=lambda c: (c[0], -len(c)))
+    selected = clusters[:2]
+    if clusters and clusters[-1] not in selected:
+        selected.append(clusters[-1])
+
     parts = []
-    for cluster in clusters:
-        shown = ", ".join(f"{t:.2f}" for t in cluster[:10])
-        if len(cluster) > 10:
-            shown += ", ..."
+    for cluster in selected:
+        shown = _format_sampled_cluster_times(cluster)
         parts.append(
             f"{cluster[0]:.2f}-{cluster[-1]:.2f}s has {len(cluster)} close onsets "
-            f"at [{shown}]"
+            f"at sampled timestamps [{shown}]"
         )
+    hidden = [cluster for cluster in clusters if cluster not in selected]
+    hidden_text = ""
+    if hidden:
+        hidden_text = (
+            f" {len(hidden)} additional onset cluster(s) exist between shown clusters "
+            f"from {hidden[0][0]:.2f}s to {hidden[-1][-1]:.2f}s; shown clusters are "
+            "representative, not exhaustive. Do not leave long silent gaps while "
+            "audible notes continue."
+        )
+    late_final_text = ""
+    last_selected_end = max(cluster[-1] for cluster in selected)
+    last_onset = onsets[-1]
+    if duration and last_onset >= duration * 0.75 and last_onset - last_selected_end > max_gap:
+        late_final_text = (
+            f" Late isolated final onset detected at {last_onset:.2f}s near the end; "
+            "include a final caption if it is audible."
+        )
+    if phrase_mode:
+        return (
+            "Rapid onset hint from audio: " + "; ".join(parts) +
+            "." + hidden_text + late_final_text +
+            " Ellipses inside timestamp lists mean additional detected onsets continue "
+            "between the shown timestamps; do not treat omitted timestamps as silence "
+            "or leave long gaps while audible notes continue." +
+            " For sustained sounds, dense detected onsets may reflect tremble, bowing "
+            "texture, vibrato, or connected string motion rather than separate attacks. "
+            "Do not caption every detected onset, but place phrase-level Hangul "
+            "captions across the full active span. Group dense onsets into flowing "
+            "phrase-level Hangul captions such as 띠라, 띠라라, 지잉, 휘잉, 찌잉, unless "
+            "there are clearly separate attacks."
+        )
+
     return (
         "Rapid onset hint from audio: " + "; ".join(parts) +
-        ". Represent these as repeated Hangul caption units with close timestamps; "
-        "do not summarize rapid repeated notes into one token."
+        "." + hidden_text + late_final_text +
+        " Ellipses inside timestamp lists mean additional detected onsets continue "
+        "between the shown timestamps; do not treat omitted timestamps as silence "
+        "or leave long gaps while audible notes continue." +
+        " Represent these as repeated Hangul caption units with close timestamps; "
+        "do not summarize rapid repeated notes into one token. If the notes are truly "
+        "uniform, the same syllable may repeat; if pitch, duration, loudness, attack, "
+        "resonance, or rests change, use a small related set of Hangul variants without "
+        "adding unsupported variety."
     )
 
 
@@ -140,7 +217,11 @@ def _skeleton_text_with_rapid_hint(row: dict, wav_path: str | None = None) -> st
     if note_hint:
         hints.append(note_hint)
     if wav_path:
-        audio_hint = build_audio_rapid_onset_hint(wav_path)
+        phrase_mode = "articulation: sustained" in text
+        audio_hint = build_audio_rapid_onset_hint(
+            wav_path,
+            phrase_mode=phrase_mode,
+        )
         if audio_hint:
             hints.append(audio_hint)
     return text + (" | " + " | ".join(hints) if hints else "")
