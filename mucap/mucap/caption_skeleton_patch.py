@@ -22,6 +22,7 @@ music_features.csv 에서 file_name 으로 따로 조회한다(get_skeleton_text
 """
 
 from __future__ import annotations
+import ast
 import os
 from os.path import join, dirname, basename
 
@@ -79,6 +80,48 @@ def _format_sampled_cluster_times(cluster: list[float]) -> str:
     return ", ".join(pieces)
 
 
+def _parse_top5_for_hint(value) -> list[tuple[str, float]]:
+    if isinstance(value, list):
+        parsed = value
+    elif isinstance(value, str):
+        try:
+            parsed = ast.literal_eval(value)
+        except (ValueError, SyntaxError):
+            return []
+    else:
+        return []
+
+    out = []
+    for index, item in enumerate(parsed):
+        try:
+            if isinstance(item, dict):
+                name = item.get("instrument") or item.get("name") or item.get("label")
+                score = item.get("score") or item.get("probability") or item.get("confidence")
+            elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                name, score = item[0], item[1]
+            else:
+                name, score = item, 1.0 / (index + 1)
+            out.append((str(name).lower(), float(score)))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _is_confident_string_context(row: dict) -> bool:
+    top5 = _parse_top5_for_hint(row.get("top5_instruments", ""))
+    if not top5:
+        return False
+
+    bowed_strings = {"violin", "viola", "cello", "doublebass"}
+    piano_names = {"piano", "keyboard"}
+    top_name, top_score = top5[0]
+    piano_score = max((score for name, score in top5 if name in piano_names), default=0.0)
+
+    if piano_score >= 0.15:
+        return False
+    return top_name in bowed_strings and top_score >= 0.45
+
+
 def build_rapid_onset_hint(feature_row,
                            max_gap: float = 0.55,
                            min_cluster_size: int = 4) -> str | None:
@@ -122,7 +165,8 @@ def build_rapid_onset_hint(feature_row,
 def build_audio_rapid_onset_hint(wav_path: str,
                                  max_gap: float = 0.55,
                                  min_cluster_size: int = 4,
-                                 phrase_mode: bool = False) -> str | None:
+                                 phrase_mode: bool = False,
+                                 string_mode: bool = False) -> str | None:
     try:
         import librosa
         y, sr = librosa.load(wav_path, sr=22050, mono=True)
@@ -181,7 +225,7 @@ def build_audio_rapid_onset_hint(wav_path: str,
             f" Late isolated final onset detected at {last_onset:.2f}s near the end; "
             "include a final caption if it is audible."
         )
-    if phrase_mode:
+    if phrase_mode and string_mode:
         return (
             "Rapid onset hint from audio: " + "; ".join(parts) +
             "." + hidden_text + late_final_text +
@@ -194,6 +238,20 @@ def build_audio_rapid_onset_hint(wav_path: str,
             "captions across the full active span. Group dense onsets into flowing "
             "phrase-level Hangul captions such as 띠라, 띠라라, 지잉, 휘잉, 찌잉, unless "
             "there are clearly separate attacks."
+        )
+
+    if phrase_mode:
+        return (
+            "Rapid onset hint from audio: " + "; ".join(parts) +
+            "." + hidden_text + late_final_text +
+            " Ellipses inside timestamp lists mean additional detected onsets continue "
+            "between the shown timestamps; do not treat omitted timestamps as silence "
+            "or leave long gaps while audible notes continue." +
+            " For sustained sounds, dense detected onsets may reflect connected texture "
+            "or resonance rather than separate attacks. Do not caption every detected "
+            "onset; keep captions sparse enough for sustained notes, but cover the full "
+            "active span. Choose Hangul syllables from the actual audio timbre instead "
+            "of using string-like examples by default."
         )
 
     return (
@@ -218,9 +276,11 @@ def _skeleton_text_with_rapid_hint(row: dict, wav_path: str | None = None) -> st
         hints.append(note_hint)
     if wav_path:
         phrase_mode = "articulation: sustained" in text
+        string_mode = phrase_mode and _is_confident_string_context(row)
         audio_hint = build_audio_rapid_onset_hint(
             wav_path,
             phrase_mode=phrase_mode,
+            string_mode=string_mode,
         )
         if audio_hint:
             hints.append(audio_hint)
