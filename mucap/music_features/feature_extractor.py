@@ -3,6 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import tensorflow as tf
 import urllib.request
+import re
 from os.path import join, dirname, basename
 
 try:
@@ -40,6 +41,33 @@ tags = [
     "oboe", "orchestra", "organ", "pad", "percussion", "piano", "pipeorgan", "rhodes", "sampler",
     "saxophone", "strings", "synthesizer", "trombone", "trumpet", "viola", "violin", "voice"
 ]
+
+LOW_VIBRATO_NOTE_HINTS = {
+    "words": {
+        "flute",
+        "clarinet",
+        "horn",
+        "piano",
+        "trumpet",
+        "trombone",
+        "tuba",
+        "bassoon",
+    },
+    "tokens": {"fl", "cl", "hn", "tpt", "tbn", "tba", "bn"},
+}
+
+HIGH_VIBRATO_NOTE_HINTS = {
+    "words": {
+        "violin",
+        "viola",
+        "cello",
+        "doublebass",
+        "oboe",
+        "guitar",
+        "saxophone",
+    },
+    "tokens": {"vn", "va", "vc", "db", "ob", "sax"},
+}
 
 
 class AudioFeatureExtraction:
@@ -102,23 +130,81 @@ class AudioFeatureExtraction:
         )
         return float(np.nanmean(f0))
 
-    def extract_notes(self, y, sr):
+    def _note_split_settings(self, instrument_hint=None):
         """
-        Extract note events (onset time, pitch, duration) using librosa.
+        Return note segmentation thresholds from a light instrument hint.
+        Low-vibrato instruments keep shorter events; high-vibrato instruments
+        require longer stability to avoid splitting vibrato into too many notes.
         """
-        # Detect onsets
-        onset_frames = librosa.onset.onset_detect(
-            y=y,
-            sr=sr,
-            units='time',
-            hop_length=512,
-            backtrack=True,
-            pre_max=20,
-            post_max=20,
-            pre_avg=100,
-            post_avg=100,
-            delta=0.2,
-            wait=0
+        hint = "" if instrument_hint is None else str(instrument_hint).lower()
+        tokens = set(filter(None, re.split(r"[^a-z0-9]+", hint)))
+        compact_hint = re.sub(r"[^a-z0-9]+", "", hint)
+
+        high_vibrato_match = (
+            bool(tokens & HIGH_VIBRATO_NOTE_HINTS["tokens"])
+            or any(word in compact_hint for word in HIGH_VIBRATO_NOTE_HINTS["words"])
+        )
+        if high_vibrato_match:
+            return 0.12, 5
+
+        low_vibrato_match = (
+            bool(tokens & LOW_VIBRATO_NOTE_HINTS["tokens"])
+            or any(word in compact_hint for word in LOW_VIBRATO_NOTE_HINTS["words"])
+        )
+        if low_vibrato_match:
+            return 0.08, 3
+
+        return 0.12, 5
+
+    def _pitch_change_frames(
+        self,
+        midi_pitch,
+        threshold_semitones,
+        min_stable_frames,
+    ):
+        """
+        Find frames where the pitch has moved far enough and stayed stable.
+        """
+        split_frames = []
+        reference_pitch = None
+        frame = 0
+
+        while frame < len(midi_pitch):
+            window = midi_pitch[frame:frame + min_stable_frames]
+            stable_values = window[np.isfinite(window)]
+            if len(stable_values) < min_stable_frames:
+                frame += 1
+                continue
+
+            window_pitch = float(np.median(stable_values))
+            if reference_pitch is None:
+                reference_pitch = window_pitch
+                frame += min_stable_frames
+                continue
+
+            if abs(window_pitch - reference_pitch) >= threshold_semitones:
+                split_frames.append(frame)
+                reference_pitch = window_pitch
+                frame += min_stable_frames
+                continue
+
+            frame += 1
+
+        return split_frames
+
+    def extract_notes(
+        self,
+        y,
+        sr,
+        instrument_hint=None,
+        pitch_change_threshold_semitones=1.5,
+    ):
+        """
+        Extract note events using stable pitch-change boundaries.
+        """
+        hop_length = 512
+        min_note_duration, min_stable_frames = self._note_split_settings(
+            instrument_hint
         )
 
         f0, _, _ = librosa.pyin(
@@ -126,28 +212,76 @@ class AudioFeatureExtraction:
             fmin=librosa.note_to_hz("C2"),
             fmax=librosa.note_to_hz("C7"),
             frame_length=2048,
-            hop_length=512
+            hop_length=hop_length
         )
 
-        # Extract pitch for each onset
+        duration = librosa.get_duration(y=y, sr=sr)
+        if f0 is None or len(f0) == 0 or duration <= 0:
+            return []
+
+        voiced_frames = np.where(np.isfinite(f0))[0]
+        if len(voiced_frames) == 0:
+            return []
+        first_note_frame = int(voiced_frames[0])
+
+        midi_pitch = librosa.hz_to_midi(f0)
+        pitch_change_frames = self._pitch_change_frames(
+            midi_pitch,
+            pitch_change_threshold_semitones,
+            min_stable_frames,
+        )
+
+        boundary_frames = []
+        for frame in [first_note_frame] + sorted(set(pitch_change_frames)):
+            if frame < first_note_frame:
+                continue
+            if boundary_frames:
+                prev_time = librosa.frames_to_time(
+                    boundary_frames[-1],
+                    sr=sr,
+                    hop_length=hop_length,
+                )
+                frame_time = librosa.frames_to_time(
+                    frame,
+                    sr=sr,
+                    hop_length=hop_length,
+                )
+                if frame_time - prev_time < min_note_duration:
+                    continue
+            boundary_frames.append(frame)
+
+        if not boundary_frames:
+            boundary_frames = [first_note_frame]
+
+        end_frame = len(f0)
+        if boundary_frames[-1] < end_frame:
+            boundary_frames.append(end_frame)
+
         notes = []
-        for i, onset_time in enumerate(onset_frames):
-            # Get pitch at onset time
-            onset_frame = librosa.time_to_frames(onset_time, sr=sr, hop_length=512)
+        for start_frame, end_frame in zip(boundary_frames[:-1], boundary_frames[1:]):
+            start_time = librosa.frames_to_time(
+                start_frame,
+                sr=sr,
+                hop_length=hop_length,
+            )
+            end_time = min(
+                librosa.frames_to_time(end_frame, sr=sr, hop_length=hop_length),
+                duration,
+            )
+            note_duration = float(end_time - start_time)
+            if note_duration < min_note_duration:
+                continue
 
-            if onset_frame < len(f0) and not np.isnan(f0[onset_frame]):
-                pitch = f0[onset_frame]
-                # Estimate duration (simplified - to next onset or end of audio)
-                if i + 1 < len(onset_frames):
-                    duration = onset_frames[i + 1] - onset_time
-                else:
-                    duration = librosa.get_duration(y=y, sr=sr) - onset_time
+            pitch_values = f0[start_frame:end_frame]
+            pitch_values = pitch_values[np.isfinite(pitch_values)]
+            if len(pitch_values) == 0:
+                continue
 
-                notes.append({
-                    "onset_time": float(onset_time),
-                    "pitch": float(pitch),
-                    "duration": float(duration)
-                })
+            notes.append({
+                "onset_time": float(start_time),
+                "pitch": float(np.median(pitch_values)),
+                "duration": note_duration
+            })
 
         return notes
 
@@ -175,7 +309,7 @@ class AudioFeatureExtraction:
         duration = librosa.get_duration(y=y, sr=sr)
         resonance = 'long' if duration > 3.0 else 'short'
         # Note events
-        notes = self.extract_notes(y, sr)
+        notes = self.extract_notes(y, sr, instrument_hint=file_path)
         # Compile
         features = {
             "volume": volume,
