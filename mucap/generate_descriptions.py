@@ -2,6 +2,7 @@ import argparse
 import base64
 import json
 import os
+import sys
 import tempfile
 import time
 import traceback
@@ -70,9 +71,15 @@ def compact_feature_text(row):
 
 def build_prompt(target, feature_row):
     feature_text = compact_feature_text(feature_row)
+    length = feature_row.get("length")
+    if pd.notna(length):
+        length = float(length)
+        length_text = f"a {length:g}-second instrumental music segment"
+    else:
+        length_text = "an instrumental music audio segment"
     return (
-        "You are generating a perceptual description for a 14-second instrumental "
-        "music segment. This is not the final caption. Describe what is heard so "
+        f"You are generating a perceptual description for {length_text}. "
+        "This is not the final caption. Describe what is heard so "
         "it can later be used as retrieval context for sound-mimetic captioning.\n\n"
         "[Context]\n"
         f"file_name: {target['file_name']}\n"
@@ -162,8 +169,8 @@ def write_description_json(target, prompt, annotation, model):
         failed_path.unlink()
 
 
-def build_targets(limit=None, overwrite=False):
-    with open(HUMAN_ANNOTATION_PATH, "r", encoding="utf-8") as file:
+def build_targets(annotation_path=HUMAN_ANNOTATION_PATH, limit=None, overwrite=False):
+    with open(annotation_path, "r", encoding="utf-8") as file:
         human_annotations = json.load(file)
 
     feature_df = pd.read_csv(MUSIC_FEATURE_PATH, encoding="utf-8")
@@ -205,8 +212,8 @@ def build_targets(limit=None, overwrite=False):
     return targets, skipped, len(human_annotations)
 
 
-def process_one(target, model, temperature, retry_count, retry_sleep):
-    client = OpenAI()
+def process_one(target, model, temperature, retry_count, retry_sleep, request_timeout):
+    client = OpenAI(timeout=request_timeout, max_retries=0)
     prompt = build_prompt(target, target["feature_row"])
     last_error = None
 
@@ -230,20 +237,27 @@ def main():
     parser = argparse.ArgumentParser(
         description="Generate MuCap description JSON files using human_annotation.json as the source of truth."
     )
-    parser.add_argument("--model", default="gpt-4o-audio-preview")
+    parser.add_argument("--model", default="gpt-audio-1.5")
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--temperature", type=float, default=0.2)
     parser.add_argument("--retry-count", type=int, default=2)
     parser.add_argument("--retry-sleep", type=float, default=3.0)
+    parser.add_argument("--request-timeout", type=float, default=90.0)
+    parser.add_argument("--annotation-path", type=Path, default=HUMAN_ANNOTATION_PATH)
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
     load_dotenv(ROOT / ".env")
-    targets, skipped, annotation_count = build_targets(limit=args.limit, overwrite=args.overwrite)
+    targets, skipped, annotation_count = build_targets(
+        annotation_path=args.annotation_path,
+        limit=args.limit,
+        overwrite=args.overwrite,
+    )
 
     print(f"human_annotation_count={annotation_count}")
+    print(f"annotation_path={args.annotation_path}")
     print(f"targets_to_generate={len(targets)}")
     print(f"skipped={skipped}")
     if targets:
@@ -269,11 +283,12 @@ def main():
                 args.temperature,
                 args.retry_count,
                 args.retry_sleep,
+                args.request_timeout,
             )
             for target in targets
         ]
 
-        for future in tqdm(as_completed(futures), total=len(futures)):
+        for future in tqdm(as_completed(futures), total=len(futures), file=sys.stdout, ascii=True):
             result = future.result()
             if result["ok"]:
                 ok_count += 1

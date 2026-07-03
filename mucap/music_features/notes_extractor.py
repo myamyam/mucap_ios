@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import sys
 import time
 import traceback
@@ -127,6 +128,41 @@ def write_error(error_log: Path, row: dict, exc: Exception) -> None:
         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def validate_notes(notes: list[dict]) -> list[str]:
+    warnings = []
+    if not notes:
+        return ["empty_notes"]
+
+    for index, note in enumerate(notes):
+        for key in ("onset_time", "pitch", "duration"):
+            value = note.get(key)
+            if value is None:
+                warnings.append(f"note_{index}_missing_{key}")
+                continue
+            try:
+                numeric_value = float(value)
+            except (TypeError, ValueError):
+                warnings.append(f"note_{index}_non_numeric_{key}")
+                continue
+            if not math.isfinite(numeric_value):
+                warnings.append(f"note_{index}_non_finite_{key}")
+            elif key == "duration" and numeric_value <= 0:
+                warnings.append(f"note_{index}_non_positive_duration")
+    return warnings
+
+
+def write_warning(warning_log: Path, row: dict, wav_path: Path, warnings: list[str]) -> None:
+    warning_log.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "file_name": row.get("file_name"),
+        "file": row.get("file"),
+        "resolved_path": str(wav_path),
+        "warnings": warnings,
+    }
+    with warning_log.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
 def build_rows_from_input_dirs(input_dirs: list[Path]) -> list[dict]:
     wavs = discover_wavs(input_dirs)
     name_counts = Counter(path.name for path in wavs)
@@ -173,6 +209,11 @@ def main() -> int:
         default=project_root / "mucap" / "logs" / "notes_extractor_errors.jsonl",
     )
     parser.add_argument(
+        "--warning-log",
+        type=Path,
+        default=project_root / "mucap" / "logs" / "notes_extractor_warnings.jsonl",
+    )
+    parser.add_argument(
         "--include-dataset",
         action="append",
         default=None,
@@ -185,6 +226,12 @@ def main() -> int:
         help="Skip rows whose dataset value matches. Can be repeated.",
     )
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument(
+        "--cooldown-seconds",
+        type=float,
+        default=0.5,
+        help="Pause after each file to reduce sustained CPU heat.",
+    )
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -241,6 +288,9 @@ def main() -> int:
                 sr,
                 instrument_hint=instrument_hint_for(row, wav_path),
             )
+            warnings = validate_notes(notes)
+            if warnings:
+                write_warning(args.warning_log.resolve(), row, wav_path, warnings)
             append_row(args.output_csv.resolve(), file_name, notes)
             succeeded += 1
             print(
@@ -264,6 +314,8 @@ def main() -> int:
             f"success={succeeded} failed={failed} eta_hours={remaining / 3600:.2f}",
             flush=True,
         )
+        if args.cooldown_seconds > 0 and index < len(rows):
+            time.sleep(args.cooldown_seconds)
 
     print(f"succeeded={succeeded}")
     print(f"failed={failed}")

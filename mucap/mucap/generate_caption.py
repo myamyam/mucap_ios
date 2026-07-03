@@ -180,6 +180,7 @@ def retrieve_rag_context(query_text: str, top_k=2, threshold=0.8):
     persist_directory = join(dirname(__file__), 'rag', 'ragdb_skeleton')
 
     vectorstore = Chroma(persist_directory=persist_directory,
+                         collection_name="mucap_rag_skeleton",
                          embedding_function=OpenAIEmbeddings(model="text-embedding-3-large"))
     
     # Check if collection exists and has documents
@@ -187,10 +188,10 @@ def retrieve_rag_context(query_text: str, top_k=2, threshold=0.8):
         collection = vectorstore._collection
         num_docs = collection.count()
         if num_docs == 0:
-            print("⚠ No documents found in the vector store.")
+            print("Warning: No documents found in the vector store.")
             return None
     except Exception as e:
-        print(f"⚠ Error checking vector store: {e}")
+        print(f"Warning: Error checking vector store: {e}")
         return None
 
     retriever = vectorstore.as_retriever(
@@ -309,7 +310,9 @@ def build_prompt_rhythm(audio_b64: str, design_prompt=None, music_features=None,
         "Japanese, Chinese characters, Hanja, adjectives, or extra symbols.\n"
         "- Do not say you will analyze the audio. Directly output the timestamped caption line.\n"
         "- Use as many units as needed to match audible rhythm and sound events.\n"
-        "- If the context includes a Rapid onset hint, follow it with repeated close-timestamp Hangul units instead of summarizing rapid notes into one token.\n"
+        "- If the context includes a Rapid onset hint, follow it with repeated close-timestamp Hangul units for clearly separated attacks.\n"
+        "- If the context says the sound is a bowed string, sustained string, vibrato, tremble, or connected bowing texture, that string rule overrides the generic Rapid onset rule: do not caption every dense detected onset. Group the active span into flowing sustained Hangul phrases unless there is a clear new attack, rest, or melodic note. For longer stable sustain, express duration inside the Hangul token by extending vowels or flowing syllable runs, e.g. short: 지잉, 찌잉; medium: 지이잉, 찌이잉, 띠라라, 이이잉; long: 지이이잉, 찌이이이잉, 띠라라라라. Do not cycle examples repeatedly or place them at mechanically even intervals.\n"
+        "- Avoid percussive one-syllable repeats like 딩 딩 딩 or 띵 띵 띵 for sustained strings; use them mainly for piano-like or clearly attacked notes.\n"
         "- If repeated notes are truly uniform, repeating the same Hangul syllable is allowed; "
         "when pitch, duration, loudness, attack, resonance, or rests change, reflect those "
         "audible changes with a small related set of Hangul variants such as 딩, 띵, 딩잉, 띠링, 따랑. "

@@ -23,6 +23,7 @@ music_features.csv 에서 file_name 으로 따로 조회한다(get_skeleton_text
 
 from __future__ import annotations
 import ast
+import math
 import os
 from os.path import join, dirname, basename
 
@@ -116,10 +117,11 @@ def _is_confident_string_context(row: dict) -> bool:
     piano_names = {"piano", "keyboard"}
     top_name, top_score = top5[0]
     piano_score = max((score for name, score in top5 if name in piano_names), default=0.0)
+    string_score = max((score for name, score in top5 if name in bowed_strings), default=0.0)
 
-    if piano_score >= 0.15:
+    if piano_score >= 0.55 and piano_score >= string_score * 1.5:
         return False
-    return top_name in bowed_strings and top_score >= 0.45
+    return string_score >= 0.18 or (top_name in bowed_strings and top_score >= 0.15)
 
 
 def build_rapid_onset_hint(feature_row,
@@ -154,11 +156,155 @@ def build_rapid_onset_hint(feature_row,
         f"at sampled timestamps [{shown}]. Ellipses inside timestamp lists mean "
         "additional detected onsets continue between the shown timestamps; do not "
         "treat omitted timestamps as silence or leave long gaps while audible notes "
-        "continue. Represent this as repeated Hangul caption units with close "
-        "timestamps; do not summarize the rapid notes into one token. If the notes are "
-        "truly uniform, the same syllable may repeat; if pitch, duration, loudness, attack, "
-        "resonance, or rests change, use a small related set of Hangul variants without "
-        "adding unsupported variety."
+        "continue. Use close captions only when these are clear separate attacks. "
+        "If the cluster is a sustained texture, vibrato, resonance, or connected "
+        "motion, group it into phrase-level Hangul captions instead of captioning "
+        "each detected point. If pitch, duration, loudness, attack, resonance, or "
+        "rests change, use a small related set of Hangul variants without adding "
+        "unsupported variety."
+    )
+
+
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        if value is None or (isinstance(value, float) and math.isnan(value)):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _median(values: list[float]) -> float:
+    values = sorted(v for v in values if v is not None)
+    if not values:
+        return 0.0
+    mid = len(values) // 2
+    if len(values) % 2:
+        return values[mid]
+    return (values[mid - 1] + values[mid]) / 2.0
+
+
+def _caption_behavior_analysis(feature_row,
+                               audio_onsets: list[float],
+                               duration: float) -> dict | None:
+    """Classify caption density from runtime notes and audio onset behavior only."""
+    if not feature_row:
+        return None
+
+    notes = parse_notes_field(feature_row.get("notes", ""))
+    if not notes:
+        return None
+
+    parsed = []
+    for note in notes:
+        onset = _safe_float(note.get("onset_time"), None)
+        dur = _safe_float(note.get("duration"), None)
+        pitch = _safe_float(note.get("pitch"), None)
+        if onset is None or dur is None or dur <= 0:
+            continue
+        parsed.append({"onset": onset, "duration": dur, "pitch": pitch})
+    if not parsed:
+        return None
+
+    parsed = sorted(parsed, key=lambda item: item["onset"])
+    durations = [item["duration"] for item in parsed]
+    note_count = len(parsed)
+    onset_count = len(audio_onsets)
+    ratio = onset_count / max(note_count, 1)
+    median_duration = _median(durations)
+    long_ratio = sum(1 for d in durations if d >= 0.45) / note_count
+    short_ratio = sum(1 for d in durations if d <= 0.18) / note_count
+    gaps = []
+    for prev, cur in zip(parsed, parsed[1:]):
+        gap = cur["onset"] - (prev["onset"] + prev["duration"])
+        if gap > 0:
+            gaps.append(gap)
+    base_duration = duration if duration > 0 else max(
+        item["onset"] + item["duration"] for item in parsed
+    )
+    gap_ratio = sum(gaps) / base_duration if base_duration > 0 else 0.0
+
+    pitch_steps = []
+    for prev, cur in zip(parsed, parsed[1:]):
+        p1, p2 = prev["pitch"], cur["pitch"]
+        if p1 and p2 and p1 > 0 and p2 > 0:
+            pitch_steps.append(abs(12.0 * math.log2(p2 / p1)))
+    pitch_change_ratio = (
+        sum(1 for step in pitch_steps if step >= 1.5) / len(pitch_steps)
+        if pitch_steps else 0.0
+    )
+
+    sustained_note_like = (
+        (median_duration >= 0.38 or long_ratio >= 0.35)
+        and gap_ratio <= 0.28
+        and (ratio >= 1.35 or onset_count >= note_count + 6)
+    )
+    connected_pitch_texture_like = (
+        gap_ratio <= 0.15
+        and ratio >= 1.35
+        and pitch_change_ratio >= 0.45
+        and short_ratio < 0.45
+    )
+    sustained_like = sustained_note_like or connected_pitch_texture_like
+    clear_attack_like = (
+        median_duration <= 0.32
+        and short_ratio >= 0.35
+        and gap_ratio >= 0.04
+        and ratio <= 2.25
+    )
+
+    stats = (
+        f"notes={note_count}, audio_onsets={onset_count}, "
+        f"onset_to_note_ratio={ratio:.2f}, median_note_duration={median_duration:.2f}s, "
+        f"long_note_ratio={long_ratio:.2f}, short_note_ratio={short_ratio:.2f}, "
+        f"gap_ratio={gap_ratio:.2f}, pitch_change_ratio={pitch_change_ratio:.2f}"
+    )
+    mode = "mixed"
+    if sustained_like:
+        mode = "sustained-texture"
+    elif clear_attack_like:
+        mode = "clear-attack"
+
+    return {
+        "mode": mode,
+        "stats": stats,
+        "note_count": note_count,
+        "audio_onset_count": onset_count,
+        "onset_to_note_ratio": ratio,
+        "median_note_duration": median_duration,
+        "long_note_ratio": long_ratio,
+        "short_note_ratio": short_ratio,
+        "gap_ratio": gap_ratio,
+        "pitch_change_ratio": pitch_change_ratio,
+    }
+
+
+def _caption_behavior_hint(analysis: dict | None) -> str | None:
+    if not analysis:
+        return None
+
+    stats = analysis["stats"]
+    mode = analysis["mode"]
+    if mode == "sustained-texture":
+        return (
+            "Caption behavior analysis from audio only: " + stats +
+            ". Behavior mode: sustained-texture. Dense onset detections likely include "
+            "vibrato, resonance, bow/noise texture, or connected motion. Do not turn "
+            "every detected onset into a separate one-syllable caption. Use connected "
+            "phrase-level Hangul captions, placed near audible pitch contour, energy, "
+            "rest, or melody changes, with medium density and no mechanical equal spacing."
+        )
+    if mode == "clear-attack":
+        return (
+            "Caption behavior analysis from audio only: " + stats +
+            ". Behavior mode: clear-attack. Detected notes are short and separated. "
+            "Use concise Hangul captions near the actual attacks, but still avoid "
+            "mechanically even spacing when the audio timing is uneven."
+        )
+    return (
+        "Caption behavior analysis from audio only: " + stats +
+        ". Behavior mode: mixed. Balance separate attack captions with sustained "
+        "phrase captions according to audible changes; do not rely on equal spacing."
     )
 
 
@@ -166,7 +312,8 @@ def build_audio_rapid_onset_hint(wav_path: str,
                                  max_gap: float = 0.55,
                                  min_cluster_size: int = 4,
                                  phrase_mode: bool = False,
-                                 string_mode: bool = False) -> str | None:
+                                 string_mode: bool = False,
+                                 feature_row: dict | None = None) -> str | None:
     try:
         import librosa
         y, sr = librosa.load(wav_path, sr=22050, mono=True)
@@ -180,6 +327,9 @@ def build_audio_rapid_onset_hint(wav_path: str,
 
     if not onsets:
         return None
+
+    behavior = _caption_behavior_analysis(feature_row, onsets, duration)
+    behavior_text = _caption_behavior_hint(behavior)
 
     clusters = []
     cur = [onsets[0]]
@@ -225,38 +375,63 @@ def build_audio_rapid_onset_hint(wav_path: str,
             f" Late isolated final onset detected at {last_onset:.2f}s near the end; "
             "include a final caption if it is audible."
         )
-    if phrase_mode and string_mode:
+    behavior_suffix = (" " + behavior_text) if behavior_text else ""
+    connected_texture_mode = string_mode or (
+        behavior is not None and behavior.get("mode") == "sustained-texture"
+    )
+    if connected_texture_mode:
+        texture_label = (
+            "For bowed string instruments"
+            if string_mode
+            else "For sustained or vibrato-like connected sounds"
+        )
         return (
             "Rapid onset hint from audio: " + "; ".join(parts) +
-            "." + hidden_text + late_final_text +
+            "." + hidden_text + late_final_text + behavior_suffix +
             " Ellipses inside timestamp lists mean additional detected onsets continue "
             "between the shown timestamps; do not treat omitted timestamps as silence "
-            "or leave long gaps while audible notes continue." +
-            " For sustained sounds, dense detected onsets may reflect tremble, bowing "
-            "texture, vibrato, or connected string motion rather than separate attacks. "
-            "Do not caption every detected onset, but place phrase-level Hangul "
-            "captions across the full active span. Group dense onsets into flowing "
-            "phrase-level Hangul captions such as 띠라, 띠라라, 지잉, 휘잉, 찌잉, unless "
-            "there are clearly separate attacks."
+            "or leave long gaps while audible notes continue. " +
+            texture_label + ", dense detected onsets often reflect "
+            "tremble, connected texture, vibrato, resonance, or continuous motion "
+            "rather than separate attacks. This connected-texture rule overrides the generic rapid "
+            "onset rule: do not caption every detected onset unless there is a "
+            "clear new attack, clear rest, or clearly new melodic note. Keep "
+            "medium density during active sound: do not collapse a long "
+            "active phrase into too few captions, and avoid long visible gaps while "
+            "the sound is still continuing. As a guide, group dense detected "
+            "onsets into flowing phrase-level Hangul captions according to audible "
+            "changes, not fixed time spacing. Use a new phrase when direction, pitch "
+            "contour, accent, energy, rest, or melody clearly changes. Express longer "
+            "stable sustain inside the Hangul token by extending vowels or flowing "
+            "syllable runs instead of adding evenly spaced timestamps. Flowing sustained "
+            "examples may include short forms like 지잉 or 찌잉, medium forms like 지이잉, "
+            "찌이잉, 띠라라, or 이이잉, and long forms like 지이이잉, 찌이이이잉, "
+            "or 띠라라라라. Do not cycle these examples repeatedly or place them at "
+            "mechanically even intervals. Choose each caption from the local sound change. "
+            "Avoid percussive one-syllable repeats like 딩 딩 딩 or 띵 띵 띵 for "
+            "sustained connected sounds."
         )
 
     if phrase_mode:
         return (
             "Rapid onset hint from audio: " + "; ".join(parts) +
-            "." + hidden_text + late_final_text +
+            "." + hidden_text + late_final_text + behavior_suffix +
             " Ellipses inside timestamp lists mean additional detected onsets continue "
             "between the shown timestamps; do not treat omitted timestamps as silence "
             "or leave long gaps while audible notes continue." +
             " For sustained sounds, dense detected onsets may reflect connected texture "
-            "or resonance rather than separate attacks. Do not caption every detected "
-            "onset; keep captions sparse enough for sustained notes, but cover the full "
-            "active span. Choose Hangul syllables from the actual audio timbre instead "
-            "of using string-like examples by default."
+            "or resonance rather than separate attacks. Do not distribute captions at "
+            "mechanically even intervals. Place phrase-level captions near audible "
+            "changes: new onset groups, pitch contour changes, accent/energy changes, "
+            "rests, or melody changes. If the sound stays stable, let one sustained "
+            "caption cover it. If the phrase is active but changing, use medium density "
+            "without equal spacing. Choose Hangul syllables from the actual audio timbre "
+            "instead of using string-like examples by default."
         )
 
     return (
         "Rapid onset hint from audio: " + "; ".join(parts) +
-        "." + hidden_text + late_final_text +
+        "." + hidden_text + late_final_text + behavior_suffix +
         " Ellipses inside timestamp lists mean additional detected onsets continue "
         "between the shown timestamps; do not treat omitted timestamps as silence "
         "or leave long gaps while audible notes continue." +
@@ -276,11 +451,12 @@ def _skeleton_text_with_rapid_hint(row: dict, wav_path: str | None = None) -> st
         hints.append(note_hint)
     if wav_path:
         phrase_mode = "articulation: sustained" in text
-        string_mode = phrase_mode and _is_confident_string_context(row)
+        string_mode = _is_confident_string_context(row)
         audio_hint = build_audio_rapid_onset_hint(
             wav_path,
             phrase_mode=phrase_mode,
             string_mode=string_mode,
+            feature_row=row,
         )
         if audio_hint:
             hints.append(audio_hint)
