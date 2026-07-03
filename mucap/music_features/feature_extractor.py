@@ -156,6 +156,56 @@ class AudioFeatureExtraction:
 
         return 0.12, 5
 
+    def _note_split_settings_from_audio(self, y, sr, f0, hop_length):
+        """
+        Runtime-safe note segmentation thresholds from audio only.
+
+        This path intentionally ignores file names and directory names. Shorter,
+        more separated voiced regions are treated like clear attacks; continuous
+        voiced regions are treated more conservatively to avoid splitting
+        vibrato/connected texture into too many notes.
+        """
+        duration = librosa.get_duration(y=y, sr=sr)
+        if duration <= 0 or f0 is None or len(f0) == 0:
+            return 0.12, 5
+
+        voiced = np.isfinite(f0)
+        voiced_ratio = float(np.mean(voiced)) if len(voiced) else 0.0
+        run_lengths = []
+        current = 0
+        for is_voiced in voiced:
+            if is_voiced:
+                current += 1
+            elif current:
+                run_lengths.append(current)
+                current = 0
+        if current:
+            run_lengths.append(current)
+
+        frame_seconds = hop_length / float(sr)
+        median_voiced_run = (
+            float(np.median(run_lengths)) * frame_seconds
+            if run_lengths else 0.0
+        )
+
+        onset_times = librosa.onset.onset_detect(
+            y=y,
+            sr=sr,
+            units="time",
+            hop_length=hop_length,
+            backtrack=False,
+        )
+        onset_density = len(onset_times) / duration
+
+        clear_attack_like = (
+            voiced_ratio < 0.72
+            or median_voiced_run < 0.28
+            or (onset_density >= 2.2 and median_voiced_run < 0.45)
+        )
+        if clear_attack_like:
+            return 0.08, 3
+        return 0.12, 5
+
     def _pitch_change_frames(
         self,
         midi_pitch,
@@ -203,10 +253,6 @@ class AudioFeatureExtraction:
         Extract note events using stable pitch-change boundaries.
         """
         hop_length = 512
-        min_note_duration, min_stable_frames = self._note_split_settings(
-            instrument_hint
-        )
-
         f0, _, _ = librosa.pyin(
             y,
             fmin=librosa.note_to_hz("C2"),
@@ -218,6 +264,18 @@ class AudioFeatureExtraction:
         duration = librosa.get_duration(y=y, sr=sr)
         if f0 is None or len(f0) == 0 or duration <= 0:
             return []
+
+        if instrument_hint is None:
+            min_note_duration, min_stable_frames = self._note_split_settings_from_audio(
+                y,
+                sr,
+                f0,
+                hop_length,
+            )
+        else:
+            min_note_duration, min_stable_frames = self._note_split_settings(
+                instrument_hint
+            )
 
         voiced_frames = np.where(np.isfinite(f0))[0]
         if len(voiced_frames) == 0:
@@ -309,7 +367,7 @@ class AudioFeatureExtraction:
         duration = librosa.get_duration(y=y, sr=sr)
         resonance = 'long' if duration > 3.0 else 'short'
         # Note events
-        notes = self.extract_notes(y, sr, instrument_hint=file_path)
+        notes = self.extract_notes(y, sr)
         # Compile
         features = {
             "volume": volume,

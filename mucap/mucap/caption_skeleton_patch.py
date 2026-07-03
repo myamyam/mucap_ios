@@ -115,13 +115,76 @@ def _is_confident_string_context(row: dict) -> bool:
 
     bowed_strings = {"violin", "viola", "cello", "doublebass"}
     piano_names = {"piano", "keyboard"}
+    voice_names = {"voice", "vocal", "vocals", "singing"}
+    guitar_names = {"guitar", "electric guitar", "acoustic guitar"}
     top_name, top_score = top5[0]
     piano_score = max((score for name, score in top5 if name in piano_names), default=0.0)
     string_score = max((score for name, score in top5 if name in bowed_strings), default=0.0)
+    voice_score = max((score for name, score in top5 if name in voice_names), default=0.0)
+    guitar_score = max((score for name, score in top5 if name in guitar_names), default=0.0)
+    string_count = sum(1 for name, _ in top5 if name in bowed_strings)
+    non_string_best = max(piano_score, voice_score, guitar_score)
+    string_sum = sum(score for name, score in top5 if name in bowed_strings)
 
     if piano_score >= 0.55 and piano_score >= string_score * 1.5:
         return False
-    return string_score >= 0.18 or (top_name in bowed_strings and top_score >= 0.15)
+    if (
+        string_count == 1
+        and voice_score >= string_score * 0.90
+        and guitar_score >= 0.60
+    ):
+        return False
+    if (
+        string_count >= 2
+        and string_score >= 0.50
+        and (
+            string_sum >= non_string_best * 1.10
+            or string_score >= non_string_best - 0.05
+        )
+    ):
+        return True
+    return (
+        top_name in bowed_strings
+        and string_score >= 0.70
+        and string_score >= non_string_best + 0.15
+    )
+
+
+def _connected_texture_style(row: dict | None,
+                             behavior: dict | None,
+                             string_mode: bool = False) -> str:
+    if string_mode:
+        return "string-like"
+    if behavior is None or behavior.get("mode") != "sustained-texture":
+        return "none"
+
+    row = row or {}
+    top5 = _parse_top5_for_hint(row.get("top5_instruments", ""))
+    wind_names = {
+        "flute", "recorder", "clarinet", "oboe", "bassoon", "saxophone",
+        "sax", "trumpet", "trombone", "horn", "french horn", "tuba",
+    }
+    wind_score = max((score for name, score in top5 if name in wind_names), default=0.0)
+
+    def safe_float(value, default=0.0):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    pitch = safe_float(row.get("pitch"))
+    onset_strength = safe_float(row.get("onset_strength"))
+    gap_ratio = safe_float(behavior.get("gap_ratio"))
+    pitch_change_ratio = safe_float(behavior.get("pitch_change_ratio"))
+
+    high_pitch = pitch >= 220.0 or (0.6 <= pitch <= 2.0)
+    connected_motion = gap_ratio <= 0.12 and pitch_change_ratio >= 0.45
+
+    if wind_score >= 0.45:
+        return "wind-like"
+    if high_pitch and connected_motion and onset_strength <= 1.4:
+        return "wind-like"
+    return "generic-sustain"
 
 
 def build_rapid_onset_hint(feature_row,
@@ -162,6 +225,123 @@ def build_rapid_onset_hint(feature_row,
         "each detected point. If pitch, duration, loudness, attack, resonance, or "
         "rests change, use a small related set of Hangul variants without adding "
         "unsupported variety."
+    )
+
+
+def build_caption_anchor_hint(feature_row,
+                              max_items: int = 18,
+                              min_pitch_step: float = 1.5,
+                              min_rest_gap: float = 0.35,
+                              min_anchor_gap: float = 0.0,
+                              merge_window: float = 0.0,
+                              compact_sustained: bool = False) -> str | None:
+    if compact_sustained:
+        max_items = min(max_items, 12)
+        min_pitch_step = max(min_pitch_step, 3.0)
+        min_anchor_gap = max(min_anchor_gap, 0.75)
+        merge_window = max(merge_window, 0.50)
+
+    row = dict(feature_row)
+    notes = parse_notes_field(row.get("notes", ""))
+    if not notes:
+        return None
+
+    parsed = []
+    for note in notes:
+        onset = _safe_float(note.get("onset_time"), None)
+        duration = _safe_float(note.get("duration"), None)
+        pitch = _safe_float(note.get("pitch"), None)
+        if onset is None or duration is None or duration <= 0:
+            continue
+        parsed.append({"onset": onset, "duration": duration, "pitch": pitch})
+    if not parsed:
+        return None
+
+    parsed = sorted(parsed, key=lambda item: item["onset"])
+    anchors = [(parsed[0]["onset"], "start", float("inf"))]
+    for prev, cur in zip(parsed, parsed[1:]):
+        prev_end = prev["onset"] + prev["duration"]
+        gap = cur["onset"] - prev_end
+        step = 0.0
+        if prev["pitch"] and cur["pitch"] and prev["pitch"] > 0 and cur["pitch"] > 0:
+            step = 12.0 * math.log2(cur["pitch"] / prev["pitch"])
+
+        reasons = []
+        if abs(step) >= min_pitch_step:
+            direction = "up" if step > 0 else "down"
+            reasons.append(f"pitch {direction} {abs(step):.1f}st")
+        if gap >= min_rest_gap:
+            reasons.append(f"after rest {gap:.2f}s")
+        if reasons:
+            anchors.append((cur["onset"], ", ".join(reasons), max(abs(step), gap)))
+
+    if len(anchors) <= 1:
+        return None
+
+    if merge_window > 0:
+        merged = []
+        group = [anchors[0]]
+        for anchor in anchors[1:]:
+            if anchor[0] - group[-1][0] <= merge_window:
+                group.append(anchor)
+            else:
+                start = group[0]
+                strongest = max(group, key=lambda item: item[2])
+                reason = start[1]
+                if strongest is not start and strongest[1] != "start":
+                    reason = f"phrase start; strongest {strongest[1]}"
+                merged.append((start[0], reason, strongest[2]))
+                group = [anchor]
+        start = group[0]
+        strongest = max(group, key=lambda item: item[2])
+        reason = start[1]
+        if strongest is not start and strongest[1] != "start":
+            reason = f"phrase start; strongest {strongest[1]}"
+        merged.append((start[0], reason, strongest[2]))
+        anchors = merged
+
+    if min_anchor_gap > 0:
+        spaced = []
+        for anchor in anchors:
+            if not spaced or anchor[0] - spaced[-1][0] >= min_anchor_gap:
+                spaced.append(anchor)
+            elif anchor[2] > spaced[-1][2] and spaced[-1][1] != "start":
+                spaced[-1] = anchor
+        anchors = spaced
+
+    if len(anchors) <= 1:
+        return None
+
+    indices = _sample_cluster_indices(len(anchors), max_items=max_items)
+    pieces = []
+    previous = None
+    for index in indices:
+        if previous is not None and index - previous > 1:
+            pieces.append("...")
+        t, reason, _ = anchors[index]
+        pieces.append(f"{t:.2f}s ({reason})")
+        previous = index
+
+    anchor_label = (
+        "compact phrase anchors" if compact_sustained else "caption anchors"
+    )
+    mode_instruction = (
+        "For sustained or wind-like textures, these are phrase-start candidates, "
+        "not a beat grid: use only a sparse subset, usually at least 0.75s apart, "
+        "and prefer longer Hangul tokens over adding more timestamps. "
+        if compact_sustained else
+        "Choose a subset according to the behavior mode: sustained textures should "
+        "group adjacent anchors into phrase-level captions, clear attacks may use "
+        "anchors more densely, and mixed audio should combine attack and pitch-change "
+        "anchors. "
+    )
+    return (
+        f"Preferred {anchor_label} from detected note/pitch changes "
+        f"({len(anchors)} candidates, sampled): [{', '.join(pieces)}]. "
+        "Use these as candidate timestamps for caption placement. "
+        + mode_instruction +
+        "Do not invent mechanically even timestamps between these anchors, and do "
+        "not choose timestamps merely because they form a regular interval."
     )
 
 
@@ -308,6 +488,23 @@ def _caption_behavior_hint(analysis: dict | None) -> str | None:
     )
 
 
+def _caption_behavior_from_wav(wav_path: str | None,
+                               feature_row: dict | None) -> dict | None:
+    if not wav_path:
+        return None
+    try:
+        import librosa
+        y, sr = librosa.load(wav_path, sr=22050, mono=True)
+        duration = len(y) / sr if sr else 0.0
+        onsets = librosa.onset.onset_detect(
+            y=y, sr=sr, units='time', backtrack=False
+        )
+        onsets = [float(t) for t in onsets]
+    except Exception:
+        return None
+    return _caption_behavior_analysis(feature_row, onsets, duration)
+
+
 def build_audio_rapid_onset_hint(wav_path: str,
                                  max_gap: float = 0.55,
                                  min_cluster_size: int = 4,
@@ -376,14 +573,52 @@ def build_audio_rapid_onset_hint(wav_path: str,
             "include a final caption if it is audible."
         )
     behavior_suffix = (" " + behavior_text) if behavior_text else ""
-    connected_texture_mode = string_mode or (
-        behavior is not None and behavior.get("mode") == "sustained-texture"
-    )
+    texture_style = _connected_texture_style(feature_row, behavior, string_mode)
+    connected_texture_mode = texture_style in {
+        "string-like", "wind-like", "generic-sustain"
+    }
     if connected_texture_mode:
+        if texture_style == "wind-like":
+            return (
+                "Rapid onset hint from audio: " + "; ".join(parts) +
+                "." + hidden_text + late_final_text + behavior_suffix +
+                " Ellipses inside timestamp lists mean additional detected onsets continue "
+                "between the shown timestamps; do not treat omitted timestamps as silence "
+                "or leave long gaps while audible notes continue. "
+                "For wind-like sustained melodic sounds, dense detected onsets often "
+                "reflect connected melodic motion, resonance, or vibrato-like airflow "
+                "rather than separate attacks. This connected-texture rule overrides "
+                "the generic rapid onset rule: do not caption every detected onset "
+                "unless there is a clear new attack, clear rest, or clearly new "
+                "melodic note. Keep medium density during active sound and avoid "
+                "mechanically even intervals. Group dense detected onsets into "
+                "flowing phrase-level Hangul captions according to audible pitch "
+                "direction, contour, accent, energy, rest, or melody changes. "
+                "Wind-like flowing melodic examples may include 띠라라, 띠라라라, "
+                "띠라라라라, 따라라, 따라라라, 두루루, 뚜루루, 루루루, or 라라라. "
+                "Use longer syllable runs for longer connected phrases. Do not cycle "
+                "these examples repeatedly; choose each caption from the local sound "
+                "change. Avoid bowed-string buzz examples like 지이잉 or 찌이잉 unless "
+                "the audio clearly sounds string-like, and avoid breath-noise examples "
+                "like 후우우 unless the audio clearly sounds airy."
+            )
+        if texture_style == "generic-sustain":
+            return (
+                "Rapid onset hint from audio: " + "; ".join(parts) +
+                "." + hidden_text + late_final_text + behavior_suffix +
+                " Ellipses inside timestamp lists mean additional detected onsets continue "
+                "between the shown timestamps; do not treat omitted timestamps as silence "
+                "or leave long gaps while audible notes continue. "
+                "For sustained or vibrato-like connected sounds, dense detected onsets "
+                "often reflect continuous motion rather than separate attacks. Use "
+                "flowing phrase-level Hangul captions chosen from the actual audio "
+                "timbre, placed near audible contour, accent, energy, rest, or melody "
+                "changes. Do not default to bowed-string buzz examples or piano-like "
+                "one-syllable repeats, and do not place captions at mechanically even "
+                "intervals."
+            )
         texture_label = (
-            "For bowed string instruments"
-            if string_mode
-            else "For sustained or vibrato-like connected sounds"
+            "For bowed string-like connected sounds"
         )
         return (
             "Rapid onset hint from audio: " + "; ".join(parts) +
@@ -446,12 +681,20 @@ def build_audio_rapid_onset_hint(wav_path: str,
 def _skeleton_text_with_rapid_hint(row: dict, wav_path: str | None = None) -> str:
     text = build_skeleton_text(row)
     hints = []
+    phrase_mode = "articulation: sustained" in text
+    string_mode = _is_confident_string_context(row)
+    texture_behavior = _caption_behavior_from_wav(wav_path, row)
+    texture_style = _connected_texture_style(row, texture_behavior, string_mode)
     note_hint = build_rapid_onset_hint(row)
     if note_hint:
         hints.append(note_hint)
+    anchor_hint = build_caption_anchor_hint(
+        row,
+        compact_sustained=(texture_style == "wind-like"),
+    )
+    if anchor_hint:
+        hints.append(anchor_hint)
     if wav_path:
-        phrase_mode = "articulation: sustained" in text
-        string_mode = _is_confident_string_context(row)
         audio_hint = build_audio_rapid_onset_hint(
             wav_path,
             phrase_mode=phrase_mode,
