@@ -126,6 +126,25 @@ def _is_confident_string_context(row: dict) -> bool:
     non_string_best = max(piano_score, voice_score, guitar_score)
     string_sum = sum(score for name, score in top5 if name in bowed_strings)
 
+    notes = parse_notes_field(row.get("notes", ""))
+    pitch_steps = []
+    parsed_pitches = []
+    for note in notes:
+        try:
+            pitch = float(note.get("pitch"))
+        except (TypeError, ValueError):
+            continue
+        if pitch > 0:
+            parsed_pitches.append(pitch)
+    for prev, cur in zip(parsed_pitches, parsed_pitches[1:]):
+        pitch_steps.append(abs(12.0 * math.log2(cur / prev)))
+    big_pitch_jump_ratio = (
+        sum(1 for step in pitch_steps if step >= 8.0) / len(pitch_steps)
+        if pitch_steps else 0.0
+    )
+    if piano_score >= 0.60 and big_pitch_jump_ratio >= 0.50:
+        return False
+
     if piano_score >= 0.55 and piano_score >= string_score * 1.5:
         return False
     if (
@@ -153,10 +172,10 @@ def _is_confident_string_context(row: dict) -> bool:
 def _connected_texture_style(row: dict | None,
                              behavior: dict | None,
                              string_mode: bool = False) -> str:
-    if string_mode:
-        return "string-like"
     if behavior is None or behavior.get("mode") != "sustained-texture":
         return "none"
+    if string_mode:
+        return "string-like"
 
     row = row or {}
     top5 = _parse_top5_for_hint(row.get("top5_instruments", ""))
@@ -235,11 +254,13 @@ def build_caption_anchor_hint(feature_row,
                               min_anchor_gap: float = 0.0,
                               merge_window: float = 0.0,
                               compact_sustained: bool = False) -> str | None:
+    compact_long_gap = 0.0
     if compact_sustained:
-        max_items = min(max_items, 12)
-        min_pitch_step = max(min_pitch_step, 3.0)
-        min_anchor_gap = max(min_anchor_gap, 0.75)
-        merge_window = max(merge_window, 0.50)
+        max_items = min(max_items, 16)
+        min_pitch_step = max(min_pitch_step, 1.5)
+        min_anchor_gap = max(min_anchor_gap, 0.35)
+        merge_window = max(merge_window, 0.25)
+        compact_long_gap = 1.00
 
     row = dict(feature_row)
     notes = parse_notes_field(row.get("notes", ""))
@@ -301,6 +322,7 @@ def build_caption_anchor_hint(feature_row,
         anchors = merged
 
     if min_anchor_gap > 0:
+        gap_candidates = anchors
         spaced = []
         for anchor in anchors:
             if not spaced or anchor[0] - spaced[-1][0] >= min_anchor_gap:
@@ -308,6 +330,20 @@ def build_caption_anchor_hint(feature_row,
             elif anchor[2] > spaced[-1][2] and spaced[-1][1] != "start":
                 spaced[-1] = anchor
         anchors = spaced
+        if compact_long_gap > 0:
+            preserved = []
+            for left, right in zip(anchors, anchors[1:]):
+                preserved.append(left)
+                if right[0] - left[0] <= compact_long_gap:
+                    continue
+                between = [
+                    anchor for anchor in gap_candidates
+                    if left[0] + min_anchor_gap <= anchor[0] <= right[0] - min_anchor_gap
+                ]
+                if between:
+                    preserved.append(max(between, key=lambda item: item[2]))
+            preserved.append(anchors[-1])
+            anchors = sorted({anchor[0]: anchor for anchor in preserved}.values())
 
     if len(anchors) <= 1:
         return None
@@ -327,8 +363,15 @@ def build_caption_anchor_hint(feature_row,
     )
     mode_instruction = (
         "For sustained or wind-like textures, these are phrase-start candidates, "
-        "not a beat grid: use only a sparse subset, usually at least 0.75s apart, "
-        "and prefer longer Hangul tokens over adding more timestamps. "
+        "not a beat grid: use only a sparse subset, usually at least 0.35s apart, "
+        "and prefer longer Hangul tokens over adding more timestamps. For active "
+        "sustained phrases, choose about 60-80% of these anchors, not all of them; "
+        "use fewer only when the sound is truly stable. Do not mirror every anchor "
+        "one-to-one as a caption. The listed anchors are representative boundary "
+        "cues, not an exhaustive set of musical events. There may be additional "
+        "audible changes between listed anchors. A caption may cover a phrase "
+        "spanning multiple anchors, and a listed anchor may be skipped if the "
+        "phrase continues naturally. "
         if compact_sustained else
         "Choose a subset according to the behavior mode: sustained textures should "
         "group adjacent anchors into phrase-level captions, clear attacks may use "
@@ -338,7 +381,7 @@ def build_caption_anchor_hint(feature_row,
     return (
         f"Preferred {anchor_label} from detected note/pitch changes "
         f"({len(anchors)} candidates, sampled): [{', '.join(pieces)}]. "
-        "Use these as candidate timestamps for caption placement. "
+        "Use these as phrase-boundary candidates, not direct caption timestamps. "
         + mode_instruction +
         "Do not invent mechanically even timestamps between these anchors, and do "
         "not choose timestamps merely because they form a regular interval."
@@ -596,7 +639,10 @@ def build_audio_rapid_onset_hint(wav_path: str,
                 "direction, contour, accent, energy, rest, or melody changes. "
                 "Wind-like flowing melodic examples may include 띠라라, 띠라라라, "
                 "띠라라라라, 따라라, 따라라라, 두루루, 뚜루루, 루루루, or 라라라. "
-                "Use longer syllable runs for longer connected phrases. Do not cycle "
+                "Use longer syllable runs for longer connected phrases. If an opening "
+                "or sustained phrase audibly continues across several anchor intervals, "
+                "captions with 7 or more Hangul characters are allowed instead of "
+                "ending the phrase too early. Do not cycle "
                 "these examples repeatedly; choose each caption from the local sound "
                 "change. Avoid bowed-string buzz examples like 지이잉 or 찌이잉 unless "
                 "the audio clearly sounds string-like, and avoid breath-noise examples "
@@ -685,12 +731,17 @@ def _skeleton_text_with_rapid_hint(row: dict, wav_path: str | None = None) -> st
     string_mode = _is_confident_string_context(row)
     texture_behavior = _caption_behavior_from_wav(wav_path, row)
     texture_style = _connected_texture_style(row, texture_behavior, string_mode)
+    compact_anchor = (
+        texture_behavior is not None
+        and texture_behavior.get("mode") == "sustained-texture"
+        and texture_style in {"string-like", "wind-like", "generic-sustain"}
+    )
     note_hint = build_rapid_onset_hint(row)
     if note_hint:
         hints.append(note_hint)
     anchor_hint = build_caption_anchor_hint(
         row,
-        compact_sustained=(texture_style == "wind-like"),
+        compact_sustained=compact_anchor,
     )
     if anchor_hint:
         hints.append(anchor_hint)

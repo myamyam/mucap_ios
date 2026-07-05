@@ -287,6 +287,11 @@ def build_prompt_rhythm(audio_b64: str, design_prompt=None, music_features=None,
             feature_str += (
                 "\n4) [Onomatopoeia annotations of similar audio] "
                 "(use only as reference and adapt to the provided music): "
+                "The instruments and annotations in these retrieved examples belong "
+                "to reference clips, not necessarily to the current audio. Do not "
+                "treat retrieved instrument names as the instrument identity or style "
+                "mode of the current audio; use the current audio analysis above for "
+                "style decisions. "
                 f"{rag_context}\n"
             )
 
