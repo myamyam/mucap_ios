@@ -21,6 +21,7 @@ except ImportError:
 from mucap.audio import encode_audio, wav_to_mp3
 from mucap.render.plot_render import render_plot_video
 from mucap.render.circle_render import render_plot_video as render_circle
+from mucap.render.audio_text_viz import visualize_captions
 from mucap.tokends2caption import tokens_to_caption
 try:
     from mucap.video_render import render_video
@@ -522,6 +523,7 @@ def annotate_and_show(wav_path, use_design_prompt=True,
         music_features = {'volume': features['volume'],
                           'pitch': features['pitch'],
                           'attack': features['attack'],
+                          'envelope': features['envelope'],
                           'envelop': features['envelope'],
                           'onset_strength': features['onset_strength'],
                           'resonance': features['resonance'],
@@ -560,6 +562,22 @@ def annotate_and_show(wav_path, use_design_prompt=True,
 
     if caption_only:
         return
+
+    try:
+        html_path = join(
+            output_path,
+            f"{no_extension}{f'-{postfix}' if postfix else ''}-audio_text_viz.html",
+        )
+        visualize_captions(
+            wav_path,
+            tokens,
+            out_path=html_path,
+            feature_row=music_features,
+        )
+        if verbose:
+            print(f"Saved audio text visualization: {html_path}")
+    except Exception as e:
+        print(f"Warning: audio text visualization failed: {e}")
 
 
     # visualize(mp3_path, output_path, tokens, font_dir='fonts', postfix=postfix, verbose=verbose)
