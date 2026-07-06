@@ -368,6 +368,14 @@ class AudioFeatureExtraction:
         resonance = 'long' if duration > 3.0 else 'short'
         # Note events
         notes = self.extract_notes(y, sr)
+        try:
+            instrument_predictions = self.predict_instrument_essentia(file_path)
+        except Exception as e:
+            print(f"Warning: instrument prediction failed; leaving instrument candidates empty: {e}")
+            instrument_predictions = []
+
+        top1_instrument = instrument_predictions[0][0] if instrument_predictions else None
+        top1_prob = instrument_predictions[0][1] if instrument_predictions else None
         # Compile
         features = {
             "volume": volume,
@@ -376,7 +384,10 @@ class AudioFeatureExtraction:
             "envelope": envelope,
             "onset_strength": onset_strength,
             "resonance": resonance,
-            "notes": notes
+            "notes": notes,
+            "top5_instruments": instrument_predictions,
+            "top1_instrument": top1_instrument,
+            "top1_prob": top1_prob
         }
         return features
 

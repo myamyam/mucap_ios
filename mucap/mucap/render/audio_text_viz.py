@@ -35,6 +35,7 @@ import html
 import json
 import math
 import re
+import shutil
 import sys
 from os.path import basename
 from pathlib import Path
@@ -49,6 +50,17 @@ try:  # repo-internal parser is the source of truth when available
     from mucap.data_io import parse_notes_field as _repo_parse_notes
 except ImportError:
     _repo_parse_notes = None
+
+try:
+    from mucap.caption_skeleton_patch import (
+        _caption_behavior_from_wav,
+        _connected_texture_style,
+        _is_confident_string_context,
+    )
+except ImportError:
+    _caption_behavior_from_wav = None
+    _connected_texture_style = None
+    _is_confident_string_context = None
 
 _DATA_DIR = Path(__file__).resolve().parents[2]  # mucap/
 DEFAULT_NOTES_CSV = _DATA_DIR / "notes_features.csv"
@@ -248,6 +260,16 @@ FREETEXT_MAPPING: dict[str, dict] = {
 }
 
 SUSTAIN_DECAY_FLOOR = 0.45
+CAPTION_FONT_SCALE = 0.85
+INTERNAL_PITCH_OFFSET_PX = 20.0
+INTERNAL_COLOR_NORM_DELTA = 0.25
+
+VISUAL_PALETTES: dict[str, dict[str, tuple[float, float] | float]] = {
+    "piano-clear": {"hue": (224.0, 198.0), "lightness": (30.0, 70.0), "sat": 76.0},
+    "string-like": {"hue": (282.0, 322.0), "lightness": (30.0, 72.0), "sat": 76.0},
+    "wind-like": {"hue": (178.0, 164.0), "lightness": (32.0, 72.0), "sat": 74.0},
+    "generic-sustain": {"hue": (32.0, 56.0), "lightness": (36.0, 74.0), "sat": 82.0},
+}
 
 
 def song_style(song_row: dict) -> dict:
@@ -280,6 +302,149 @@ def apply_note_mapping(df: pd.DataFrame, mapping: dict[str, dict]) -> pd.DataFra
         lo, hi = cfg["range"]
         df[attr] = lo + norm * (hi - lo)
     return df
+
+
+def _pitch_norm(row: pd.Series, df: pd.DataFrame) -> float:
+    if df.empty or "pitch_st" not in df:
+        return 0.5
+    values = df["pitch_st"].to_numpy(dtype=float)
+    mask = np.isfinite(values)
+    if mask.sum() < 2:
+        return 0.5
+    lo, hi = np.percentile(values[mask], [5, 95])
+    if hi - lo < 1e-9:
+        return 0.5
+    try:
+        pitch_value = float(row.get("pitch_st", np.nan))
+    except (TypeError, ValueError):
+        return 0.5
+    if not np.isfinite(pitch_value):
+        return 0.5
+    return float(np.clip((pitch_value - lo) / (hi - lo), 0.0, 1.0))
+
+
+def _visual_mode_from_context(
+    wav_path_or_name: str | Path,
+    row: dict,
+) -> str:
+    behavior = None
+    if _caption_behavior_from_wav is not None:
+        try:
+            behavior = _caption_behavior_from_wav(str(wav_path_or_name), row)
+        except Exception:
+            behavior = None
+
+    string_mode = False
+    if _is_confident_string_context is not None:
+        try:
+            string_mode = bool(_is_confident_string_context(row))
+        except Exception:
+            string_mode = False
+
+    texture_style = None
+    if _connected_texture_style is not None:
+        try:
+            texture_style = _connected_texture_style(row, behavior, string_mode)
+        except Exception:
+            texture_style = None
+
+    top5 = _parse_visual_top5(row.get("top5_instruments", ""))
+    bowed_strings = {"violin", "viola", "cello", "doublebass", "strings"}
+    wind_names = {
+        "flute", "recorder", "clarinet", "oboe", "bassoon", "saxophone",
+        "sax", "trumpet", "trombone", "horn", "french horn", "tuba",
+    }
+    piano_names = {"piano", "keyboard", "electricpiano", "rhodes"}
+    voice_names = {"voice", "vocal", "vocals", "singing"}
+    guitar_names = {"guitar", "electricguitar", "acousticguitar", "classicalguitar"}
+
+    def best(names: set[str]) -> float:
+        return max((score for name, score in top5 if name in names), default=0.0)
+
+    string_score = best(bowed_strings)
+    string_sum = sum(score for name, score in top5 if name in bowed_strings)
+    string_count = sum(1 for name, _ in top5 if name in bowed_strings)
+    wind_score = best(wind_names)
+    piano_score = best(piano_names)
+    voice_score = best(voice_names)
+    guitar_score = best(guitar_names)
+    non_string_best = max(piano_score, voice_score, guitar_score, wind_score)
+    behavior_mode = behavior.get("mode") if behavior else None
+
+    if texture_style == "string-like":
+        return "string-like"
+
+    if texture_style == "wind-like":
+        return "wind-like"
+
+    if (
+        piano_score >= 0.80
+        and behavior_mode in {"clear-attack", "mixed"}
+        and piano_score >= max(string_score, wind_score) + 0.15
+    ):
+        return "piano-clear"
+
+    if behavior_mode == "sustained-texture":
+        return "generic-sustain"
+    return "piano-clear"
+
+
+def _parse_visual_top5(raw: object) -> list[tuple[str, float]]:
+    if raw is None or (isinstance(raw, float) and math.isnan(raw)):
+        return []
+    if isinstance(raw, str):
+        try:
+            raw = ast.literal_eval(raw)
+        except (ValueError, SyntaxError):
+            return []
+    if not isinstance(raw, (list, tuple)):
+        return []
+
+    out = []
+    for index, item in enumerate(raw):
+        try:
+            if isinstance(item, dict):
+                name = item.get("name") or item.get("instrument") or item.get("label")
+                score = item.get("score") or item.get("prob") or item.get("probability")
+            elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                name, score = item[0], item[1]
+            else:
+                name, score = item, 1.0 / (index + 1)
+            cleaned = re.sub(r"[^a-z0-9]+", "", str(name).lower())
+            out.append((cleaned, float(score)))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _palette_color(norm: float, visual_mode: str) -> tuple[float, float, float]:
+    palette = VISUAL_PALETTES.get(visual_mode, VISUAL_PALETTES["piano-clear"])
+    hue_lo, hue_hi = palette["hue"]  # type: ignore[misc]
+    light_lo, light_hi = palette["lightness"]  # type: ignore[misc]
+    sat = float(palette["sat"])
+    hue = float(hue_lo + norm * (hue_hi - hue_lo))
+    lightness = float(light_lo + norm * (light_hi - light_lo))
+    return hue, sat, lightness
+
+
+def _color_style(
+    row: pd.Series,
+    df: pd.DataFrame,
+    visual_mode: str,
+    base_norm: float | None = None,
+) -> str:
+    norm = _pitch_norm(row, df)
+    if base_norm is not None:
+        norm = float(
+            np.clip(
+                base_norm + np.clip(norm - base_norm, -INTERNAL_COLOR_NORM_DELTA,
+                                    INTERNAL_COLOR_NORM_DELTA),
+                0.0,
+                1.0,
+            )
+        )
+    hue, sat, lightness = _palette_color(norm, visual_mode)
+    return f"hsl({hue:.0f} {sat:.0f}% {lightness:.0f}%)"
 
 
 # ---------------------------------------------------------------------------
@@ -318,53 +483,372 @@ _PAGE = """<!DOCTYPE html>
 <meta charset="utf-8">
 <title>{title}</title>
 <style>
-  body {{ background: #fafafa; margin: 48px; }}
-  .viz {{ {base}; line-height: 2.1; word-break: keep-all; }}
-  .tok {{ white-space: nowrap; margin-right: 0.45em; }}
+  body {{ background: #fff; color: #fff; margin: 36px; }}
+  .player {{ margin-top: 18px; text-align: center; }}
+  audio {{ width: min(720px, 100%); }}
+  .stage {{
+    position: relative;
+    height: 420px;
+    border: 1px solid #111;
+    background: #fff;
+    overflow: hidden;
+  }}
+  .grid {{
+    position: absolute;
+    inset: 0;
+    background-image:
+      linear-gradient(to right, rgba(0,0,0,0.18) 1px, transparent 1px),
+      linear-gradient(to bottom, rgba(0,0,0,0.08) 1px, transparent 1px);
+    background-size: 12.5% 100%, 100% 50%;
+  }}
+  .cursor {{
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 3px;
+    background: red;
+    transform: translateX(-1.5px);
+    z-index: 4;
+  }}
+  .caption-token {{
+    position: absolute;
+    top: 50%;
+    transform: translate(-50%, calc(-50% + var(--token-y, 0px)));
+    white-space: nowrap;
+    z-index: 3;
+    {base};
+  }}
+  .caption-pop {{
+    display: inline-block;
+    transform: translateY(0) scale(1);
+    transition: transform 90ms ease-out;
+    transform-origin: center bottom;
+  }}
+  .caption-token.is-popping .caption-pop {{
+    transform: translateY(-18px) scale(1.12);
+  }}
+  .caption-char {{
+    display: inline-block;
+  }}
+  .time-axis {{
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 34px;
+    border-top: 1px solid rgba(0,0,0,0.45);
+    color: #000;
+    font: 13px/1.2 Arial, sans-serif;
+  }}
+  .tick {{
+    position: absolute;
+    bottom: 8px;
+    transform: translateX(-50%);
+  }}
 </style>
 </head>
 <body>
-<div class="viz">{body}</div>
+<div class="stage" data-duration="{duration}">
+  <div class="grid"></div>
+  <div class="cursor"></div>
+  {body}
+  <div class="time-axis">{ticks}</div>
+</div>
+{audio}
+<script>
+(function () {{
+  const audio = document.querySelector("audio");
+  const stage = document.querySelector(".stage");
+  const cursor = document.querySelector(".cursor");
+  const tokens = Array.from(document.querySelectorAll(".caption-token"));
+  const ticks = Array.from(document.querySelectorAll(".tick"));
+  const fallbackDuration = parseFloat(stage.dataset.duration || "1") || 1;
+  const windowSize = 7.0;
+  let raf = null;
+
+  function duration() {{
+    return audio && Number.isFinite(audio.duration) && audio.duration > 0
+      ? audio.duration
+      : fallbackDuration;
+  }}
+
+  function viewStart(current, dur) {{
+    const visible = Math.min(windowSize, dur);
+    if (dur <= visible) return 0;
+    if (current < visible / 2) return 0;
+    if (current > dur - visible / 2) return dur - visible;
+    return current - visible / 2;
+  }}
+
+  function updateTimeline() {{
+    const dur = duration();
+    const visible = Math.min(windowSize, dur);
+    const current = audio ? audio.currentTime : 0;
+    const start = viewStart(current, dur);
+    const end = start + visible;
+    tokens.forEach((token) => {{
+      const t = parseFloat(token.dataset.time || "0") || 0;
+      const inside = t >= start - 0.001 && t <= end + 0.001;
+      token.style.display = inside ? "inline-block" : "none";
+      if (inside) {{
+        token.style.left = `${{Math.max(0, Math.min(100, ((t - start) / visible) * 100))}}%`;
+      }}
+      const popAge = current - t;
+      token.classList.toggle("is-popping", popAge >= 0 && popAge <= 0.32);
+    }});
+    ticks.forEach((tick) => {{
+      const t = parseFloat(tick.dataset.time || "0") || 0;
+      const inside = t >= start - 0.001 && t <= end + 0.001;
+      tick.style.display = inside ? "inline-block" : "none";
+      if (inside) {{
+        tick.style.left = `${{Math.max(0, Math.min(100, ((t - start) / visible) * 100))}}%`;
+      }}
+    }});
+    cursor.style.left = `${{Math.max(0, Math.min(100, ((current - start) / visible) * 100))}}%`;
+  }}
+
+  function loop() {{
+    updateTimeline();
+    if (audio && !audio.paused && !audio.ended) {{
+      raf = requestAnimationFrame(loop);
+    }}
+  }}
+
+  updateTimeline();
+  if (audio) {{
+    audio.addEventListener("loadedmetadata", () => {{
+      updateTimeline();
+    }});
+    audio.addEventListener("timeupdate", updateTimeline);
+    audio.addEventListener("seeked", updateTimeline);
+    audio.addEventListener("play", () => {{
+      if (raf) cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(loop);
+    }});
+    audio.addEventListener("pause", () => {{
+      if (raf) cancelAnimationFrame(raf);
+      updateTimeline();
+    }});
+    audio.addEventListener("ended", () => {{
+      if (raf) cancelAnimationFrame(raf);
+      updateTimeline();
+    }});
+  }}
+}})();
+</script>
 </body>
 </html>"""
 
 
-def _token_html(token: str, row: pd.Series) -> str:
+def _prepare_audio_html(
+    audio_path: str | Path | None,
+    out_path: Path | None,
+    copy_audio: bool = True,
+) -> str:
+    if not audio_path:
+        return ""
+
+    src = Path(audio_path)
+    if not src.exists():
+        return ""
+
+    audio_src = src
+    if copy_audio and out_path is not None:
+        dst = Path(out_path).parent / src.name
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if src.resolve() != dst.resolve():
+            shutil.copy2(src, dst)
+        audio_src = Path(src.name)
+
+    return (
+        '<div class="player">'
+        f'<audio controls preload="metadata" src="{html.escape(str(audio_src))}"></audio>'
+        "</div>"
+    )
+
+
+def _token_html(token: str, row: pd.Series, df: pd.DataFrame, visual_mode: str) -> str:
     chars = list(token)
     n = len(chars)
     spans = []
+    base_norm = _pitch_norm(row, df)
     for j, ch in enumerate(chars):
         if n > 2 and SUSTAIN_DECAY_FLOOR < 1.0:
             fade = 1.0 - (j / (n - 1)) * (1.0 - SUSTAIN_DECAY_FLOOR)
         else:
             fade = 1.0
+        _ = fade
         spans.append(
-            f'<span style="opacity: {row["opacity"] * fade:.2f}">'
+            f'<span style="opacity: 1.00; '
+            f'color: {_color_style(row, df, visual_mode, base_norm)};">'
             f"{html.escape(ch)}</span>"
         )
     style = (
-        f"color: hsl({row['hue']:.0f} 70% {row['lightness']:.0f}%);"
-        f" font-size: {row['size_px']:.1f}px;"
+        f"color: {_color_style(row, df, visual_mode)};"
+        f" font-size: {row['size_px'] * CAPTION_FONT_SCALE:.1f}px;"
     )
     return f'<span class="tok" style="{style}">{"".join(spans)}</span>'
 
 
+def _pitch_offset_px(row: pd.Series, df: pd.DataFrame, max_offset: float = 115.0) -> float:
+    if df.empty or "pitch_st" not in df:
+        return 0.0
+    values = df["pitch_st"].to_numpy(dtype=float)
+    mask = np.isfinite(values)
+    if mask.sum() < 2:
+        return 0.0
+    lo, hi = np.percentile(values[mask], [5, 95])
+    if hi - lo < 1e-9:
+        return 0.0
+    try:
+        pitch_value = float(row.get("pitch_st", np.nan))
+    except (TypeError, ValueError):
+        return 0.0
+    if not np.isfinite(pitch_value):
+        return 0.0
+    norm = np.clip((pitch_value - lo) / (hi - lo), 0.0, 1.0)
+    return (0.5 - norm) * 2.0 * max_offset
+
+
+def _row_at_time(t: float, df: pd.DataFrame) -> pd.Series | None:
+    if df.empty:
+        return None
+    return df.iloc[note_index_at(t, df)]
+
+
+def _caption_end_time(index: int, captions: list[dict], full_duration: float) -> float:
+    start = float(captions[index]["time"])
+    if index + 1 < len(captions):
+        end = float(captions[index + 1]["time"])
+    else:
+        end = full_duration
+    return max(end, start + 0.05)
+
+
+def _timeline_token_html(
+    token: str,
+    row: pd.Series,
+    timestamp: float,
+    end_time: float,
+    df: pd.DataFrame,
+    visual_mode: str,
+) -> str:
+    chars = list(token)
+    n = len(chars)
+    spans = []
+    token_offset_y = _pitch_offset_px(row, df)
+    base_norm = _pitch_norm(row, df)
+    for j, ch in enumerate(chars):
+        if n:
+            char_time = timestamp + ((j + 0.5) / n) * max(end_time - timestamp, 0.05)
+        else:
+            char_time = timestamp
+        char_row = _row_at_time(char_time, df)
+        if char_row is None:
+            char_row = row
+        if n > 2 and SUSTAIN_DECAY_FLOOR < 1.0:
+            fade = 1.0 - (j / (n - 1)) * (1.0 - SUSTAIN_DECAY_FLOOR)
+        else:
+            fade = 1.0
+        _ = fade
+        raw_offset_y = _pitch_offset_px(char_row, df)
+        offset_y = float(
+            np.clip(
+                raw_offset_y - token_offset_y,
+                -INTERNAL_PITCH_OFFSET_PX,
+                INTERNAL_PITCH_OFFSET_PX,
+            )
+        )
+        spans.append(
+            f'<span class="caption-char" style="'
+            f'opacity: 1.00; '
+            f'color: {_color_style(char_row, df, visual_mode, base_norm)}; '
+            f'transform: translateY({offset_y:.1f}px);">'
+            f"{html.escape(ch)}</span>"
+        )
+    style = (
+        f"color: {_color_style(row, df, visual_mode)};"
+        f" font-size: {row['size_px'] * CAPTION_FONT_SCALE:.1f}px;"
+    )
+    return (
+        f'<span class="caption-token" data-time="{timestamp:.4f}" '
+        f'style="--token-y: {token_offset_y:.1f}px; {style}">'
+        f'<span class="caption-pop">{"".join(spans)}</span></span>'
+    )
+
+
+def _duration_from_captions(captions: list[dict], df: pd.DataFrame) -> float:
+    values = [float(cap["time"]) for cap in captions if "time" in cap]
+    if not df.empty:
+        values.append(float((df["onset_time"] + df["duration"]).max()))
+    return max(values) if values else 1.0
+
+
+def _axis_ticks(duration: float) -> str:
+    duration = max(float(duration), 1.0)
+    step = 1.0 if duration <= 20 else 5.0
+    ticks = []
+    t = 0.0
+    while t <= duration + 1e-6:
+        left = min(100.0, max(0.0, (t / duration) * 100.0))
+        label = str(int(round(t)))
+        ticks.append(
+            f'<span class="tick" data-time="{t:.4f}" '
+            f'style="left: {left:.3f}%">{label}</span>'
+        )
+        t += step
+    return "".join(ticks)
+
+
 def render_caption_html(
-    captions: list[dict], df: pd.DataFrame, song_row: dict, title: str = ""
+    captions: list[dict],
+    df: pd.DataFrame,
+    song_row: dict,
+    title: str = "",
+    audio_html: str = "",
+    visual_mode: str = "piano-clear",
 ) -> str:
     tokens = []
-    for cap in captions:
+    parsed_captions = list(captions)
+    duration = _duration_from_captions(parsed_captions, df)
+    for index, cap in enumerate(parsed_captions):
         idx = note_index_at(cap["time"], df) if not df.empty else None
         if idx is None:
-            tokens.append(f"<span class=\"tok\">{html.escape(cap['text'])}</span>")
+            tokens.append(
+                f'<span class="caption-token" data-time="{float(cap["time"]):.4f}">'
+                f"{html.escape(cap['text'])}</span>"
+            )
         else:
-            tokens.append(_token_html(cap["text"], df.iloc[idx]))
+            end_time = _caption_end_time(index, parsed_captions, duration)
+            tokens.append(
+                _timeline_token_html(
+                    cap["text"],
+                    df.iloc[idx],
+                    cap["time"],
+                    end_time,
+                    df,
+                    visual_mode,
+                )
+            )
     base = "; ".join(f"{k}: {v}" for k, v in song_style(song_row).items())
-    return _PAGE.format(title=html.escape(title), base=base, body="".join(tokens))
+    return _PAGE.format(
+        title=html.escape(title),
+        base=base,
+        audio=audio_html,
+        body="".join(tokens),
+        duration=f"{duration:.4f}",
+        ticks=_axis_ticks(duration),
+    )
 
 
 def render_freetext_html(
-    text: str, df: pd.DataFrame, song_row: dict, title: str = ""
+    text: str,
+    df: pd.DataFrame,
+    song_row: dict,
+    title: str = "",
+    audio_html: str = "",
+    visual_mode: str = "piano-clear",
 ) -> str:
     assign = assign_notes_to_chars(text, df)
     spans = []
@@ -378,13 +862,20 @@ def render_freetext_html(
             continue
         row = df.iloc[idx]
         style = (
-            f"color: hsl({row['hue']:.0f} 70% {row['lightness']:.0f}%);"
-            f" font-size: {row['size_px']:.1f}px;"
-            f" opacity: {row['opacity']:.2f};"
+            f"color: {_color_style(row, df, visual_mode)};"
+            f" font-size: {row['size_px'] * CAPTION_FONT_SCALE:.1f}px;"
+            f" opacity: 1.00;"
         )
         spans.append(f'<span style="{style}">{escaped}</span>')
     base = "; ".join(f"{k}: {v}" for k, v in song_style(song_row).items())
-    return _PAGE.format(title=html.escape(title), base=base, body="".join(spans))
+    return _PAGE.format(
+        title=html.escape(title),
+        base=base,
+        audio=audio_html,
+        body="".join(spans),
+        duration="1.0000",
+        ticks=_axis_ticks(1.0),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -399,6 +890,8 @@ def visualize_captions(
     notes_csv: Path = DEFAULT_NOTES_CSV,
     features_csv: Path | None = DEFAULT_FEATURES_CSV,
     feature_row: dict | None = None,
+    audio_path: str | Path | None = None,
+    copy_audio: bool = True,
 ) -> Path:
     """One-call hook: caption output -> styled HTML file. Returns the path.
 
@@ -409,13 +902,25 @@ def visualize_captions(
     file_name = _audio_key(wav_path_or_name)
     notes, song_row = load_song(file_name, notes_csv, features_csv, feature_row)
     df = apply_note_mapping(note_table(notes), CAPTION_MAPPING)
-    doc = render_caption_html(parse_captions(captions), df, song_row, title=file_name)
+    context_row = dict(song_row)
+    if feature_row:
+        context_row.update(feature_row)
+    visual_mode = _visual_mode_from_context(audio_path or wav_path_or_name, context_row)
 
     if out_path is None:
         DEFAULT_OUT_DIR.mkdir(parents=True, exist_ok=True)
         out_path = DEFAULT_OUT_DIR / (Path(file_name).stem + ".html")
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    audio_html = _prepare_audio_html(audio_path, out_path, copy_audio)
+    doc = render_caption_html(
+        parse_captions(captions),
+        df,
+        song_row,
+        title=file_name,
+        audio_html=audio_html,
+        visual_mode=visual_mode,
+    )
     out_path.write_text(doc, encoding="utf-8")
     return out_path
 

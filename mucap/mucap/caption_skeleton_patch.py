@@ -169,6 +169,44 @@ def _is_confident_string_context(row: dict) -> bool:
     )
 
 
+def _is_weak_string_texture_context(row: dict | None, behavior: dict | None) -> bool:
+    """Promote ambiguous sustained mid/high-register textures toward strings.
+
+    This is intentionally weaker than _is_confident_string_context and only
+    runs after audio-only behavior has already identified a sustained texture.
+    It avoids using filenames and keeps bright high-register wind-like cases
+    and low-register piano-like cases out of the string branch.
+    """
+    if not row or not behavior or behavior.get("mode") != "sustained-texture":
+        return False
+
+    top5 = _parse_top5_for_hint(row.get("top5_instruments", ""))
+    bowed_strings = {"violin", "viola", "cello", "doublebass", "strings"}
+    string_score = max((score for name, score in top5 if name in bowed_strings), default=0.0)
+    if string_score < 0.50:
+        return False
+
+    def safe_float(value, default=0.0):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    pitch = safe_float(row.get("pitch"))
+    onset_strength = safe_float(row.get("onset_strength"))
+    note_count = safe_float(behavior.get("note_count"))
+    gap_ratio = safe_float(behavior.get("gap_ratio"))
+    pitch_change_ratio = safe_float(behavior.get("pitch_change_ratio"))
+
+    return (
+        175.0 <= pitch <= 280.0
+        and onset_strength <= 1.05
+        and note_count <= 45
+        and gap_ratio <= 0.08
+        and pitch_change_ratio >= 0.70
+    )
+
+
 def _connected_texture_style(row: dict | None,
                              behavior: dict | None,
                              string_mode: bool = False) -> str:
@@ -178,6 +216,9 @@ def _connected_texture_style(row: dict | None,
         return "string-like"
 
     row = row or {}
+    if _is_weak_string_texture_context(row, behavior):
+        return "string-like"
+
     top5 = _parse_top5_for_hint(row.get("top5_instruments", ""))
     wind_names = {
         "flute", "recorder", "clarinet", "oboe", "bassoon", "saxophone",

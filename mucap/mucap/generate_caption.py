@@ -573,6 +573,8 @@ def annotate_and_show(wav_path, use_design_prompt=True,
             tokens,
             out_path=html_path,
             feature_row=music_features,
+            audio_path=wav_path,
+            copy_audio=True,
         )
         if verbose:
             print(f"Saved audio text visualization: {html_path}")
