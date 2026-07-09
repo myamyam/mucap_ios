@@ -7,7 +7,12 @@ import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation, FFMpegWriter
 from scipy.interpolate import make_interp_spline
 
-from mucap.render.utils import db_to_weight, load_pretendard_fonts, add_audio_to_video
+from mucap.render.utils import (
+    add_audio_to_video,
+    configure_matplotlib_ffmpeg,
+    db_to_weight,
+    load_pretendard_fonts,
+)
 
 
 def render_plot_video(wav_path,
@@ -22,6 +27,7 @@ def render_plot_video(wav_path,
                  postfix=None,
                  dark_mode=True):
 
+    configure_matplotlib_ffmpeg()
     fig, ax = plt.subplots(figsize=(12, 4))
     y, sr = librosa.load(wav_path, sr=22050, mono=True)
     duration = librosa.get_duration(y=y, sr=sr)

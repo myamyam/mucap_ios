@@ -1,6 +1,7 @@
 import os
 import glob
 import subprocess
+import shutil
 
 from matplotlib import font_manager as fm
 from os.path import dirname
@@ -28,12 +29,38 @@ def db_to_weight(db):
     return "Black"
 
 
+def find_ffmpeg():
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+
+    try:
+        import imageio_ffmpeg
+        found = imageio_ffmpeg.get_ffmpeg_exe()
+        if found and os.path.exists(found):
+            return found
+    except Exception:
+        pass
+
+    return None
+
+
+FFMPEG = find_ffmpeg()
+
+
+def configure_matplotlib_ffmpeg():
+    if not FFMPEG:
+        return
+    import matplotlib as mpl
+    mpl.rcParams["animation.ffmpeg_path"] = FFMPEG
+
+
 def add_audio_to_video(video_path, audio_path):
     # Create a temporary output file
     temp_path = video_path.replace(".mp4", "_temp.mp4")
 
     cmd = [
-        "ffmpeg", "-y",
+        FFMPEG or "ffmpeg", "-y",
         "-i", video_path,
         "-i", audio_path,
         "-c:v", "copy",

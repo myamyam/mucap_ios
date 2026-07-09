@@ -180,9 +180,13 @@ def retrieve_rag_context(query_text: str, top_k=2, threshold=0.8):
 
     persist_directory = join(dirname(__file__), 'rag', 'ragdb_skeleton')
 
-    vectorstore = Chroma(persist_directory=persist_directory,
-                         collection_name="mucap_rag_skeleton",
-                         embedding_function=OpenAIEmbeddings(model="text-embedding-3-large"))
+    try:
+        vectorstore = Chroma(persist_directory=persist_directory,
+                             collection_name="mucap_rag_skeleton",
+                             embedding_function=OpenAIEmbeddings(model="text-embedding-3-large"))
+    except BaseException as e:
+        print(f"Warning: Chroma vector store failed, using embedding RAG fallback: {e}")
+        return retrieve_rag_context_embedding_cache(query_text, persist_directory, top_k=top_k)
     
     # Check if collection exists and has documents
     try:
@@ -192,18 +196,22 @@ def retrieve_rag_context(query_text: str, top_k=2, threshold=0.8):
             print("Warning: No documents found in the vector store.")
             return None
     except Exception as e:
-        print(f"Warning: Error checking vector store: {e}")
-        return None
+        print(f"Warning: Error checking vector store, using embedding RAG fallback: {e}")
+        return retrieve_rag_context_embedding_cache(query_text, persist_directory, top_k=top_k)
 
     retriever = vectorstore.as_retriever(
         search_type="similarity_score_threshold",
         search_kwargs={"k": top_k, "score_threshold": threshold}
     )
 
-    if hasattr(retriever, "invoke"):
-        docs = retriever.invoke(query_text)
-    else:
-        docs = retriever.get_relevant_documents(query_text)
+    try:
+        if hasattr(retriever, "invoke"):
+            docs = retriever.invoke(query_text)
+        else:
+            docs = retriever.get_relevant_documents(query_text)
+    except Exception as e:
+        print(f"Warning: Error querying vector store, using embedding RAG fallback: {e}")
+        return retrieve_rag_context_embedding_cache(query_text, persist_directory, top_k=top_k)
     if not docs:
         print(f"Warning: No documents found above similarity threshold {threshold}")
         return None
@@ -212,6 +220,82 @@ def retrieve_rag_context(query_text: str, top_k=2, threshold=0.8):
     for i, doc in enumerate(docs):
         output += f"[Annotation {i+1}] {doc.page_content}\n"
 
+    return output
+
+
+def retrieve_rag_context_embedding_cache(query_text: str, persist_directory: str, top_k=2):
+    """Fallback RAG retrieval using text-embedding-3-large and cached vectors.
+
+    The canonical path is Chroma over mucap_rag_skeleton. If a Windows Chroma
+    build cannot open the persisted HNSW index, keep the same ragdb_skeleton
+    document store but build a sidecar embedding cache with text-embedding-3-large
+    and rank by cosine similarity.
+    """
+    import hashlib
+    import sqlite3
+
+    import numpy as np
+
+    db_path = join(persist_directory, "chroma.sqlite3")
+    if not path.exists(db_path):
+        print(f"Warning: RAG SQLite DB not found: {db_path}")
+        return None
+
+    try:
+        with sqlite3.connect(db_path) as con:
+            rows = con.execute(
+                """
+                SELECT m.string_value
+                FROM embedding_metadata AS m
+                JOIN embeddings AS e ON e.id = m.id
+                JOIN segments AS s ON s.id = e.segment_id
+                JOIN collections AS c ON c.id = s.collection
+                WHERE m.key = 'chroma:document'
+                  AND c.name = 'mucap_rag_skeleton'
+                  AND m.string_value IS NOT NULL
+                ORDER BY e.id
+                """
+            ).fetchall()
+    except Exception as e:
+        print(f"Warning: embedding RAG fallback failed to read SQLite: {e}")
+        return None
+
+    docs = [doc_text for (doc_text,) in rows]
+    if not docs:
+        print("Warning: embedding RAG fallback found no documents.")
+        return None
+
+    cache_key = hashlib.sha256("\n".join(docs).encode("utf-8")).hexdigest()[:16]
+    cache_path = join(persist_directory, f"embedding_cache_{cache_key}.npz")
+    embeddings_client = OpenAIEmbeddings(model="text-embedding-3-large")
+
+    if path.exists(cache_path):
+        cache = np.load(cache_path)
+        doc_embeddings = cache["embeddings"]
+    else:
+        print("Building RAG embedding cache with text-embedding-3-large...")
+        batches = []
+        batch_size = 64
+        for start in range(0, len(docs), batch_size):
+            batch = docs[start:start + batch_size]
+            batches.extend(embeddings_client.embed_documents(batch))
+        doc_embeddings = np.asarray(batches, dtype=np.float32)
+        np.savez_compressed(cache_path, embeddings=doc_embeddings)
+
+    query_embedding = np.asarray(
+        embeddings_client.embed_query(query_text),
+        dtype=np.float32,
+    )
+
+    doc_norms = np.linalg.norm(doc_embeddings, axis=1)
+    query_norm = np.linalg.norm(query_embedding)
+    denom = np.maximum(doc_norms * query_norm, 1e-12)
+    scores = (doc_embeddings @ query_embedding) / denom
+    top_indices = np.argsort(scores)[::-1][:top_k]
+
+    output = ""
+    for i, index in enumerate(top_indices):
+        output += f"[Annotation {i+1}] {docs[int(index)]}\n"
     return output
 
 def interpret_music_features(music_features):

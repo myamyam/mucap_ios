@@ -9,7 +9,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation, FFMpegWriter
 
-from .utils import load_pretendard_fonts, add_audio_to_video
+from .utils import (
+    add_audio_to_video,
+    configure_matplotlib_ffmpeg,
+    load_pretendard_fonts,
+)
 
 def annotation_render(
     wav_path,
@@ -21,6 +25,7 @@ def annotation_render(
     postfix="static",
     window_size=3.0
 ):
+    configure_matplotlib_ffmpeg()
     # 1. Load audio
     y, sr = librosa.load(wav_path, sr=22050)
     duration = librosa.get_duration(y=y, sr=sr)

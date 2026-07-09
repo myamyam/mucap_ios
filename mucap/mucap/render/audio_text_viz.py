@@ -263,6 +263,8 @@ SUSTAIN_DECAY_FLOOR = 0.45
 CAPTION_FONT_SCALE = 0.85
 INTERNAL_PITCH_OFFSET_PX = 20.0
 INTERNAL_COLOR_NORM_DELTA = 0.25
+INTERNAL_OPACITY_NORM_DELTA = 0.25
+INTERNAL_OPACITY_RANGE = (1.0, 0.68)
 
 VISUAL_PALETTES: dict[str, dict[str, tuple[float, float] | float]] = {
     "piano-clear": {"hue": (224.0, 198.0), "lightness": (30.0, 70.0), "sat": 76.0},
@@ -445,6 +447,25 @@ def _color_style(
         )
     hue, sat, lightness = _palette_color(norm, visual_mode)
     return f"hsl({hue:.0f} {sat:.0f}% {lightness:.0f}%)"
+
+
+def _opacity_style(
+    row: pd.Series,
+    df: pd.DataFrame,
+    base_norm: float | None = None,
+) -> float:
+    norm = _pitch_norm(row, df)
+    if base_norm is not None:
+        norm = float(
+            np.clip(
+                base_norm + np.clip(norm - base_norm, -INTERNAL_OPACITY_NORM_DELTA,
+                                    INTERNAL_OPACITY_NORM_DELTA),
+                0.0,
+                1.0,
+            )
+        )
+    lo, hi = INTERNAL_OPACITY_RANGE
+    return float(lo + norm * (hi - lo))
 
 
 # ---------------------------------------------------------------------------
@@ -760,9 +781,10 @@ def _timeline_token_html(
                 INTERNAL_PITCH_OFFSET_PX,
             )
         )
+        opacity = _opacity_style(char_row, df, base_norm)
         spans.append(
             f'<span class="caption-char" style="'
-            f'opacity: 1.00; '
+            f'opacity: {opacity:.2f}; '
             f'color: {_color_style(char_row, df, visual_mode, base_norm)}; '
             f'transform: translateY({offset_y:.1f}px);">'
             f"{html.escape(ch)}</span>"

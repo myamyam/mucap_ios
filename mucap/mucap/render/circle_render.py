@@ -8,7 +8,7 @@ from matplotlib.animation import FuncAnimation, FFMpegWriter
 from matplotlib.patches import Ellipse
 from scipy.interpolate import make_interp_spline
 
-from mucap.render.utils import add_audio_to_video
+from mucap.render.utils import add_audio_to_video, configure_matplotlib_ffmpeg
 
 
 def render_plot_video(
@@ -27,6 +27,7 @@ def render_plot_video(
         circle_radius_factor: float = 1.0
 ):
 
+    configure_matplotlib_ffmpeg()
     fig, ax = plt.subplots(figsize=(12, 4))
 
     # === Load audio ===
