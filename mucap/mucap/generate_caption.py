@@ -1,4 +1,4 @@
-import argparse, json, re
+import argparse, json, os, re
 import pandas as pd
 import _osx_support
 from os import path
@@ -22,6 +22,7 @@ from mucap.audio import encode_audio, wav_to_mp3
 from mucap.render.plot_render import render_plot_video
 from mucap.render.circle_render import render_plot_video as render_circle
 from mucap.render.audio_text_viz import visualize_captions
+from mucap.render.audio_text_viz_video import visualize_captions_video
 from mucap.tokends2caption import tokens_to_caption
 try:
     from mucap.video_render import render_video
@@ -561,6 +562,10 @@ def annotate_and_show(wav_path, use_design_prompt=True,
                       verbose=False,
                       caption_only=False):
 
+    if output_path is None:
+        output_path = dirname(wav_path)
+    os.makedirs(output_path, exist_ok=True)
+
     mp3_path = wav_to_mp3(wav_path)
     audio_b64 = encode_audio(mp3_path)
 
@@ -660,8 +665,21 @@ def annotate_and_show(wav_path, use_design_prompt=True,
             audio_path=wav_path,
             copy_audio=True,
         )
+        video_path = join(
+            output_path,
+            f"{no_extension}{f'-{postfix}' if postfix else ''}-audio_text_viz_direct.mp4",
+        )
+        visualize_captions_video(
+            wav_path,
+            tokens,
+            out_path=video_path,
+            feature_row=music_features,
+            audio_path=wav_path,
+            html_path=html_path,
+        )
         if verbose:
             print(f"Saved audio text visualization: {html_path}")
+            print(f"Saved audio text visualization video: {video_path}")
     except Exception as e:
         print(f"Warning: audio text visualization failed: {e}")
 
