@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MuCap 햅틱 결과 재생</title>
+  <style>
+    :root { --bg:#1a1b23; --surface:#25262e; --border:#3d3e4a; --text:#e6e7ef; --muted:#9a9baa; --accent:#6c8dff; --ok:#5dd879; --error:#e86c6c; }
+    * { box-sizing:border-box; }
+    body { max-width:960px; margin:auto; padding:24px; font-family:'Segoe UI',sans-serif; background:var(--bg); color:var(--text); }
+    section { margin:18px 0; padding:20px; border:1px solid var(--border); border-radius:10px; background:var(--surface); }
+    h1 { font-size:1.4rem; } h2 { margin-top:0; font-size:1rem; color:var(--muted); }
+    select, button { padding:10px 12px; border:1px solid var(--border); border-radius:7px; background:var(--bg); color:var(--text); }
+    select { width:100%; margin:6px 0 14px; }
+    button { border:0; background:var(--accent); cursor:pointer; font-weight:600; }
+    button:disabled { opacity:.55; cursor:not-allowed; }
+    video { width:100%; max-height:520px; background:#000; border-radius:8px; pointer-events:none; }
+    #status, #log { white-space:pre-wrap; color:var(--muted); }
+    .ok { color:var(--ok) !important; } .error { color:var(--error) !important; }
+  </style>
+</head>
+<body>
+  <h1>MuCap 영상 + 햅틱 재생</h1>
+  <p>영상은 음소거로 재생합니다. 원본 WAV(A)는 Realtek 이어폰으로, 햅틱 전용 WAV(B)는 US05 진동자로 동시에 출력합니다.</p>
+
+  <section>
+    <h2>MuCap 결과 선택</h2>
+    <label for="result">결과 폴더</label>
+    <select id="result"></select>
+    <div id="status">결과를 불러오는 중…</div>
+    <label for="videoSelect">렌더링 MP4</label>
+    <select id="videoSelect"></select>
+  </section>
+
+  <section>
+    <video id="video" muted playsinline></video>
+    <p>
+      <button id="play" disabled>영상 + 오디오 + 햅틱 재생</button>
+      <button id="pause" disabled>일시정지</button>
+    </p>
+    <div id="log">준비 중…</div>
+  </section>
+
+  <script>
+    const resultSelect = document.getElementById('result');
+    const videoSelect = document.getElementById('videoSelect');
+    const video = document.getElementById('video');
+    const status = document.getElementById('status');
+    const log = document.getElementById('log');
+    const playButton = document.getElementById('play');
+    const pauseButton = document.getElementById('pause');
+    let results = [];
+    let playbackState = 'idle';
+    let activeResultName = null;
+
+    function selectedResult() { return results[Number(resultSelect.value)] || null; }
+
+    async function stopPlayback(resetVideo = true) {
+      if (playbackState !== 'idle') {
+        try { await fetch('/api/stop', { method: 'POST' }); } catch (_) {}
+      }
+      video.pause();
+      if (resetVideo) video.currentTime = 0;
+      playbackState = 'idle';
+      activeResultName = null;
+      pauseButton.disabled = true;
+      pauseButton.textContent = '일시정지';
+    }
+
+    function updateResult() {
+      const item = selectedResult();
+      videoSelect.innerHTML = '';
+      if (!item) {
+        status.textContent = '표시할 MuCap 결과가 없습니다.';
+        playButton.disabled = true;
+        video.removeAttribute('src');
+        return;
+      }
+      for (const path of item.videos) {
+        const option = document.createElement('option');
+        option.value = path;
+        option.textContent = path.split('/').pop();
+        videoSelect.appendChild(option);
+      }
+      const mp4Status = item.videos.length
+        ? `있음 (${item.videos.map(path => path.split('/').pop()).join(', ')})`
+        : '없음';
+      const hapticStatus = item.haptic
+        ? `있음 (${item.haptic.split('/').pop()})`
+        : '없음';
+      status.textContent = `audio_text_viz_direct MP4: ${mp4Status}\n햅틱 WAV: ${hapticStatus}`;
+      status.className = item.complete ? 'ok' : 'error';
+      playButton.disabled = !item.complete;
+      updateVideo();
+    }
+
+    function updateVideo() {
+      const path = videoSelect.value;
+      if (path) video.src = '/api/media?path=' + encodeURIComponent(path);
+    }
+
+    async function loadResults() {
+      status.textContent = '결과를 불러오는 중…';
+      const response = await fetch('/api/results');
+      const data = await response.json();
+      results = data.results || [];
+      resultSelect.innerHTML = '';
+      results.forEach((item, index) => {
+        const option = document.createElement('option');
+        option.value = String(index);
+        option.textContent = item.name;
+        resultSelect.appendChild(option);
+      });
+      updateResult();
+    }
+
+    resultSelect.addEventListener('change', async () => {
+      await stopPlayback();
+      updateResult();
+      log.textContent = '결과가 변경되어 기존 재생을 정지했습니다.';
+    });
+    videoSelect.addEventListener('change', async () => {
+      await stopPlayback();
+      updateVideo();
+      log.textContent = '영상이 변경되어 기존 재생을 정지했습니다.';
+    });
+    playButton.addEventListener('click', async () => {
+      const item = selectedResult();
+      if (!item?.complete) return;
+
+      if (playbackState === 'paused' && activeResultName === item.name) {
+        const response = await fetch('/api/resume', { method: 'POST' });
+        const data = await response.json();
+        if (!data.ok) {
+          log.textContent = data.message;
+          log.className = 'error';
+          return;
+        }
+        await video.play();
+        playbackState = 'playing';
+        playButton.textContent = '재생 중';
+        pauseButton.disabled = false;
+        pauseButton.textContent = '일시정지';
+        log.textContent = '이전 위치에서 재생을 이어갑니다.';
+        return;
+      }
+
+      if (playbackState !== 'idle') return;
+      log.textContent = '재생 준비 중…';
+      video.muted = true;
+      video.volume = 0;
+      video.currentTime = 0;
+      playbackState = 'playing';
+      activeResultName = item.name;
+      playButton.textContent = '재생 중';
+      pauseButton.disabled = false;
+      const delayMs = 300;
+      const hapticRequest = fetch('/api/play-result', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: item.haptic, start_delay_ms: delayMs }),
+      });
+      window.setTimeout(() => video.play().catch(err => {
+        log.textContent = '영상 재생 오류: ' + err.message;
+        log.className = 'error';
+      }), delayMs);
+      try {
+        const response = await hapticRequest;
+        const data = await response.json();
+        log.textContent = data.message || (data.ok ? '재생 완료.' : '햅틱 재생 오류');
+        log.className = data.ok ? 'ok' : 'error';
+      } catch (err) {
+        log.textContent = '요청 실패: ' + err.message;
+        log.className = 'error';
+      } finally {
+        playbackState = 'idle';
+        activeResultName = null;
+        playButton.textContent = '영상 + 오디오 + 햅틱 재생';
+        playButton.disabled = !selectedResult()?.complete;
+        pauseButton.disabled = true;
+        pauseButton.textContent = '일시정지';
+      }
+    });
+
+    pauseButton.addEventListener('click', async () => {
+      if (playbackState !== 'playing') return;
+      video.pause();
+      const response = await fetch('/api/pause', { method: 'POST' });
+      const data = await response.json();
+      if (!data.ok) {
+        log.textContent = data.message;
+        log.className = 'error';
+        return;
+      }
+      playbackState = 'paused';
+      playButton.textContent = '이어 재생';
+      pauseButton.disabled = true;
+      log.textContent = '일시정지했습니다. 이어 재생을 누르면 같은 위치에서 계속됩니다.';
+    });
+
+    loadResults().catch(err => {
+      status.textContent = '목록 로드 실패: ' + err.message;
+      status.className = 'error';
+    });
+  </script>
+</body>
+</html>

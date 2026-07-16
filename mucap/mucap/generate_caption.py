@@ -1,4 +1,5 @@
-import argparse, json, os, re
+import argparse, json, os, re, sys
+from pathlib import Path
 import pandas as pd
 import _osx_support
 from os import path
@@ -34,6 +35,33 @@ except ImportError:
     visualize = None
 from mucap.caption_skeleton_patch import augment_feature_str
 from music_features.feature_extractor import AudioFeatureExtraction
+
+
+def generate_haptic_output(wav_path, output_path):
+    """Create the haptic WAV beside the rendered MuCap videos."""
+    project_root = Path(__file__).resolve().parents[2]
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+
+    from multimodal_caption.hybrid_test import convert_one
+
+    source_wav = Path(wav_path).resolve()
+    output_dir = Path(output_path).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    haptic_path = output_dir / f"{source_wav.stem}-haptic.wav"
+
+    convert_one(
+        in_path=str(source_wav),
+        out_path=str(haptic_path),
+        preset_name="melodic",
+        quality="mid",
+        strength=1.0,
+        gain_low=1.0,
+        gain_remap=1.0,
+        sr_override=0,
+        low_cut_override=0.0,
+    )
+    return haptic_path
 
 
 def audio_feature_key(path_or_name):
@@ -814,6 +842,9 @@ def annotate_and_show(wav_path, use_design_prompt=True,
         save_spectrogram(mp3_path, output_path, sr=44100, postfix=postfix)
     else:
         print("Warning: extract_spectogram.py not found; skipping spectrogram output.")
+
+    haptic_path = generate_haptic_output(wav_path, output_path)
+    print(f"Saved haptic WAV: {haptic_path}")
 
 
 
