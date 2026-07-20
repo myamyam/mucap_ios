@@ -262,16 +262,13 @@ FREETEXT_MAPPING: dict[str, dict] = {
 SUSTAIN_DECAY_FLOOR = 0.45
 CAPTION_FONT_SCALE = 0.85
 INTERNAL_PITCH_OFFSET_PX = 20.0
-INTERNAL_COLOR_NORM_DELTA = 0.25
+INTERNAL_COLOR_NORM_DELTA = 0.35
 INTERNAL_OPACITY_NORM_DELTA = 0.25
 INTERNAL_OPACITY_RANGE = (1.0, 0.68)
 
-VISUAL_PALETTES: dict[str, dict[str, tuple[float, float] | float]] = {
-    "piano-clear": {"hue": (224.0, 198.0), "lightness": (30.0, 70.0), "sat": 76.0},
-    "string-like": {"hue": (282.0, 322.0), "lightness": (30.0, 72.0), "sat": 76.0},
-    "wind-like": {"hue": (178.0, 164.0), "lightness": (32.0, 72.0), "sat": 74.0},
-    "generic-sustain": {"hue": (32.0, 56.0), "lightness": (36.0, 74.0), "sat": 82.0},
-}
+PITCH_COLOR_HUE_RANGE = (260.0, 355.0)
+PITCH_COLOR_LIGHTNESS_RANGE = (28.0, 65.0)
+PITCH_COLOR_SATURATION = 82.0
 
 
 def song_style(song_row: dict) -> dict:
@@ -381,7 +378,7 @@ def _visual_mode_from_context(
 
     if (
         piano_score >= 0.80
-        and behavior_mode in {"clear-attack", "mixed"}
+        and behavior_mode == "clear-attack"
         and piano_score >= max(string_score, wind_score) + 0.15
     ):
         return "piano-clear"
@@ -420,13 +417,14 @@ def _parse_visual_top5(raw: object) -> list[tuple[str, float]]:
 
 
 def _palette_color(norm: float, visual_mode: str) -> tuple[float, float, float]:
-    palette = VISUAL_PALETTES.get(visual_mode, VISUAL_PALETTES["piano-clear"])
-    hue_lo, hue_hi = palette["hue"]  # type: ignore[misc]
-    light_lo, light_hi = palette["lightness"]  # type: ignore[misc]
-    sat = float(palette["sat"])
+    """Map pitch diagonally from dark blue-violet to brighter red."""
+    del visual_mode  # Behavior still drives haptics, but no longer drives color.
+    norm = float(np.clip(norm, 0.0, 1.0))
+    hue_lo, hue_hi = PITCH_COLOR_HUE_RANGE
+    light_lo, light_hi = PITCH_COLOR_LIGHTNESS_RANGE
     hue = float(hue_lo + norm * (hue_hi - hue_lo))
     lightness = float(light_lo + norm * (light_hi - light_lo))
-    return hue, sat, lightness
+    return hue, PITCH_COLOR_SATURATION, lightness
 
 
 def _color_style(
@@ -439,8 +437,11 @@ def _color_style(
     if base_norm is not None:
         norm = float(
             np.clip(
-                base_norm + np.clip(norm - base_norm, -INTERNAL_COLOR_NORM_DELTA,
-                                    INTERNAL_COLOR_NORM_DELTA),
+                base_norm + np.clip(
+                    norm - base_norm,
+                    -INTERNAL_COLOR_NORM_DELTA,
+                    INTERNAL_COLOR_NORM_DELTA,
+                ),
                 0.0,
                 1.0,
             )

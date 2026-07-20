@@ -1,4 +1,5 @@
 import argparse, json, os, re, sys
+from functools import lru_cache
 from pathlib import Path
 import pandas as pd
 import _osx_support
@@ -24,6 +25,10 @@ from mucap.render.plot_render import render_plot_video
 from mucap.render.circle_render import render_plot_video as render_circle
 from mucap.render.audio_text_viz import visualize_captions
 from mucap.render.audio_text_viz_video import visualize_captions_video
+from mucap.render.audio_text_bounce_video import visualize_captions_bounce_video
+from mucap.render.audio_text_karaoke_video import visualize_captions_karaoke_video
+from mucap.render.audio_text_bounce_overlay_video import render_bounce_overlay
+from mucap.render.audio_text_karaoke_overlay_video import render_karaoke_overlay
 from mucap.tokends2caption import tokens_to_caption
 try:
     from mucap.video_render import render_video
@@ -37,7 +42,61 @@ from mucap.caption_skeleton_patch import augment_feature_str
 from music_features.feature_extractor import AudioFeatureExtraction
 
 
-def generate_haptic_output(wav_path, output_path):
+def select_haptic_preset(wav_path, feature_row):
+    """Map MuCap caption behavior/texture classification to a haptic preset."""
+    if not feature_row:
+        return "generic"
+
+    try:
+        from mucap.caption_skeleton_patch import (
+            _caption_behavior_from_wav,
+            _connected_texture_style,
+            _is_confident_string_context,
+        )
+
+        behavior = _caption_behavior_from_wav(str(wav_path), feature_row)
+        if not behavior:
+            return "generic"
+
+        behavior_mode = behavior.get("mode")
+        if behavior_mode == "clear-attack":
+            return "percussive"
+
+        if behavior_mode == "sustained-texture":
+            string_mode = bool(_is_confident_string_context(feature_row))
+            texture_style = _connected_texture_style(
+                feature_row,
+                behavior,
+                string_mode,
+            )
+            return {
+                "string-like": "melodic",
+                "wind-like": "ambience",
+                "generic-sustain": "generic",
+            }.get(texture_style, "generic")
+
+        # Unknown modes use the unchanged general preset.
+        return "generic"
+    except Exception as exc:
+        print(f"Warning: haptic preset classification failed; using generic: {exc}")
+    return "generic"
+
+
+def is_clear_attack_behavior(wav_path, feature_row) -> bool:
+    """Read the actual caption behavior result without relying on prompt text."""
+    if not feature_row:
+        return False
+    try:
+        from mucap.caption_skeleton_patch import _caption_behavior_from_wav
+
+        behavior = _caption_behavior_from_wav(str(wav_path), feature_row)
+        return bool(behavior and behavior.get("mode") == "clear-attack")
+    except Exception as exc:
+        print(f"Warning: clear-attack validation mode unavailable: {exc}")
+        return False
+
+
+def generate_haptic_output(wav_path, output_path, feature_row=None):
     """Create the haptic WAV beside the rendered MuCap videos."""
     project_root = Path(__file__).resolve().parents[2]
     if str(project_root) not in sys.path:
@@ -49,11 +108,13 @@ def generate_haptic_output(wav_path, output_path):
     output_dir = Path(output_path).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     haptic_path = output_dir / f"{source_wav.stem}-haptic.wav"
+    preset_name = select_haptic_preset(source_wav, feature_row)
+    print(f"Haptic classification: preset={preset_name}")
 
     convert_one(
         in_path=str(source_wav),
         out_path=str(haptic_path),
-        preset_name="melodic",
+        preset_name=preset_name,
         quality="mid",
         strength=1.0,
         gain_low=1.0,
@@ -344,10 +405,13 @@ def interpret_music_features(music_features):
 
     volume = safe_float(music_features.get('volume', 0))
     pitch = safe_float(music_features.get('pitch', 0))
-    attack = safe_float(music_features.get('attack', 0))
-    envelope = safe_float(music_features.get('envelop', 0))
     onset_strength = safe_float(music_features.get('onset_strength', 0))
-    resonance = safe_float(music_features.get('resonance', 0))
+    attack_raw = music_features.get('attack', '')
+    envelope_raw = music_features.get(
+        'envelope',
+        music_features.get('envelop', ''),
+    )
+    resonance_raw = music_features.get('resonance', '')
 
     top5_instruments = music_features.get('top5_instruments', [])
     if isinstance(top5_instruments, str):
@@ -363,16 +427,32 @@ def interpret_music_features(music_features):
 
     # Interpret feature values
     pitch_desc = "high pitch" if pitch > 0.6 else "mid pitch" if pitch > 0.3 else "low pitch"
-    attack_desc = "strong attack" if attack > 0.6 else "moderate attack" if attack > 0.3 else "soft attack"
+    attack_text = str(attack_raw).strip().lower()
+    if attack_text in {"sharp", "soft"}:
+        attack_desc = f"{attack_text} attack"
+    else:
+        attack_value = safe_float(attack_raw)
+        attack_desc = (
+            "strong attack" if attack_value > 0.6
+            else "moderate attack" if attack_value > 0.3
+            else "soft attack"
+        )
     volume_desc = "loud" if volume > 0.6 else "medium volume" if volume > 0.3 else "quiet"
-    resonance_desc = "long resonance" if resonance > 0.6 else "short resonance"
+    resonance_text = str(resonance_raw).strip().lower()
+    if resonance_text in {"long", "short"}:
+        resonance_desc = f"{resonance_text} resonance"
+    else:
+        resonance_value = safe_float(resonance_raw)
+        resonance_desc = "long resonance" if resonance_value > 0.6 else "short resonance"
+    envelope_text = str(envelope_raw).strip().lower() or "unknown"
 
     return (
         f"3) [Context]:\n"
         f"- Instruments used: {instruments_str}\n"
         f"- Interpreted audio traits: {volume_desc}, {pitch_desc}, {attack_desc}, {resonance_desc}\n"
-        f"- Raw values: volume: {volume:.2f}, pitch: {pitch:.2f}, attack: {attack:.2f}, "
-        f"envelope: {envelope:.2f}, onset_strength: {onset_strength:.2f}, resonance: {resonance:.2f}"
+        f"- Raw values: volume: {volume:.2f}, pitch: {pitch:.2f}, "
+        f"attack: {attack_text or attack_raw}, envelope: {envelope_text}, "
+        f"onset_strength: {onset_strength:.2f}, resonance: {resonance_text or resonance_raw}"
     )
 
 def build_prompt_rhythm(audio_b64: str, design_prompt=None, music_features=None,
@@ -418,23 +498,26 @@ def build_prompt_rhythm(audio_b64: str, design_prompt=None, music_features=None,
         "Output rules are strict:\n"
         "- Return exactly one line and nothing else.\n"
         "- Every caption unit must match this pattern: [seconds] HangulText\n"
-        "- Use spaces between units, for example: "
-        "[0.00] 쿠 [0.45] 탁 [0.80] 두둥 [1.25] 찌잉 [1.70] 팡\n"
-        "- Use Hangul Korean onomatopoeia such as: "
-        "찌잉, 땅, 뚜웅, 삽비빅, 따라라, 짜라, 쿠, 탁, 띠리링, "
-        "으악, 크악, 챙, 슈욱, 퍽, 쿠웅.\n"
-        "- For music, prefer syllables that follow pitch, sustain, attack, and rests: "
-        "딩, 띵, 또로롱, 따란, 찌잉, 두둥, 쿵, 탁, 사락, 휘잉.\n"
+        "- Square brackets around every timestamp are mandatory. Format-only example: "
+        "[0.00] 가 [0.45] 나. The placeholder syllables 가 and 나 demonstrate syntax "
+        "only and are not sound-word vocabulary examples.\n"
+        "- Separate caption units with spaces and keep every timestamp immediately "
+        "before its Hangul caption token.\n"
+        "- Use only Hangul Korean onomatopoeia for musical instrument sounds.\n"
+        "- Choose instrumental syllables from the audible pitch, register, duration, "
+        "loudness, attack, resonance, articulation, and rests. Do not use human cries, "
+        "speech-like exclamations, impact-only effects, or electronic beeps unless they "
+        "are genuinely produced as part of the instrument sound.\n"
         "- Do not write explanations, greetings, markdown, English words, romanized Korean, "
         "Japanese, Chinese characters, Hanja, adjectives, or extra symbols.\n"
         "- Do not say you will analyze the audio. Directly output the timestamped caption line.\n"
         "- Use as many units as needed to match audible rhythm and sound events.\n"
         "- If the context includes a Rapid onset hint, follow it with repeated close-timestamp Hangul units for clearly separated attacks.\n"
-        "- If the context says the sound is a bowed string, sustained string, vibrato, tremble, or connected bowing texture, that string rule overrides the generic Rapid onset rule: do not caption every dense detected onset. Group the active span into flowing sustained Hangul phrases unless there is a clear new attack, rest, or melodic note. For longer stable sustain, express duration inside the Hangul token by extending vowels or flowing syllable runs, e.g. short: 지잉, 찌잉; medium: 지이잉, 찌이잉, 띠라라, 이이잉; long: 지이이잉, 찌이이이잉, 띠라라라라. Do not cycle examples repeatedly or place them at mechanically even intervals.\n"
-        "- Avoid percussive one-syllable repeats like 딩 딩 딩 or 띵 띵 띵 for sustained strings; use them mainly for piano-like or clearly attacked notes.\n"
-        "- If repeated notes are truly uniform, repeating the same Hangul syllable is allowed; "
-        "when pitch, duration, loudness, attack, resonance, or rests change, reflect those "
-        "audible changes with a small related set of Hangul variants such as 딩, 띵, 딩잉, 띠링, 따랑. "
+        "- Repetition is allowed only when the notes are genuinely uniform. Do not let "
+        "one-syllable tokens dominate a passage whose notes have audible sustain or "
+        "resonance. When pitch, register, duration, loudness, attack, resonance, "
+        "articulation, or rests change, reflect those changes in the consonant, vowel, "
+        "and token length instead of repeating one token or alternating a fixed pair. "
         "Do not add variety unsupported by the audio.\n"
         "- If unsure, still output a short valid caption line with timestamps.\n"
         f"Optional style guide: {design_prompt or 'No guide'}"
@@ -462,7 +545,7 @@ def llm_api(model, messages, temp=0.7):
     client = OpenAI()
     r = client.chat.completions.create(
         model=model, messages=messages, temperature=temp,
-        max_tokens=512, top_p=1, frequency_penalty=0, presence_penalty=0
+        max_tokens=2048, top_p=1, frequency_penalty=0, presence_penalty=0
     )
 
     return r.choices[0].message.content.strip()
@@ -478,9 +561,280 @@ def _is_hangul_token(token: str) -> bool:
     return bool(re.fullmatch(r"[가-힣]+", token))
 
 
-def caption_validation_error(caption: str, wav_path: str) -> str | None:
+@lru_cache(maxsize=128)
+def _audio_activity_profile(wav_path: str):
+    """Cache onset times and RMS activity used by mid-gap validation."""
+    import librosa
+    import numpy as np
+
+    y, sr = librosa.load(wav_path, sr=22050, mono=True)
+    hop_length = 512
+    onset_envelope = librosa.onset.onset_strength(
+        y=y,
+        sr=sr,
+        hop_length=hop_length,
+    )
+    onset_frames = librosa.onset.onset_detect(
+        onset_envelope=onset_envelope,
+        sr=sr,
+        hop_length=hop_length,
+        backtrack=False,
+    )
+    onset_times = tuple(
+        float(value)
+        for value in librosa.frames_to_time(
+            onset_frames,
+            sr=sr,
+            hop_length=hop_length,
+        )
+    )
+    onset_strengths = tuple(
+        float(onset_envelope[int(frame)])
+        for frame in onset_frames
+    )
+
+    rms = librosa.feature.rms(
+        y=y,
+        frame_length=2048,
+        hop_length=hop_length,
+    )[0]
+    rms_times = librosa.frames_to_time(
+        np.arange(len(rms)),
+        sr=sr,
+        hop_length=hop_length,
+    )
+    peak = float(np.max(rms)) if len(rms) else 0.0
+    activity_threshold = peak * 0.06
+    return (
+        onset_times,
+        onset_strengths,
+        tuple(float(value) for value in rms_times),
+        tuple(float(value) for value in rms),
+        activity_threshold,
+        peak,
+    )
+
+
+def active_mid_gap_validation_error(
+    tokens,
+    wav_path: str,
+    min_caption_gap: float = 4.0,
+    min_onsets: int = 3,
+    min_active_ratio: float = 0.35,
+) -> str | None:
+    """Reject long caption gaps only when the underlying audio remains active."""
+    ordered = sorted(tokens, key=lambda item: item[0])
+    if len(ordered) < 2:
+        return None
+
+    try:
+        onset_times, _, rms_times, rms_values, activity_threshold, _ = (
+            _audio_activity_profile(str(Path(wav_path).resolve()))
+        )
+    except Exception as exc:
+        print(f"Warning: mid-gap audio validation unavailable: {exc}")
+        return None
+
+    for (left_time, _), (right_time, _) in zip(ordered, ordered[1:]):
+        gap = right_time - left_time
+        if gap < min_caption_gap:
+            continue
+
+        # Ignore the immediate edges because the caption at either boundary can
+        # legitimately describe a short attack or resonance around that timestamp.
+        inner_start = left_time + 0.5
+        inner_end = right_time - 0.5
+        if inner_end <= inner_start:
+            continue
+
+        onset_count = sum(
+            1 for onset in onset_times
+            if inner_start <= onset <= inner_end
+        )
+        if onset_count < min_onsets:
+            continue
+
+        interval_rms = [
+            value for timestamp, value in zip(rms_times, rms_values)
+            if inner_start <= timestamp <= inner_end
+        ]
+        if not interval_rms or activity_threshold <= 0:
+            continue
+
+        active_ratio = (
+            sum(value >= activity_threshold for value in interval_rms)
+            / len(interval_rms)
+        )
+        if active_ratio >= min_active_ratio:
+            return (
+                f"caption skips active audio from {left_time:.2f}s to "
+                f"{right_time:.2f}s ({gap:.2f}s gap, {onset_count} onsets, "
+                f"{active_ratio:.0%} active)"
+            )
+
+    return None
+
+
+def near_silent_caption_times(
+    tokens,
+    wav_path: str,
+    silent_onset_tolerance: float = 0.25,
+    silent_db_threshold: float = -32.0,
+    extreme_silence_db_threshold: float = -40.0,
+) -> list[float]:
+    """Return captions in extreme silence or low energy without a nearby onset."""
+    import numpy as np
+
+    try:
+        (
+            onset_times,
+            onset_strengths,
+            rms_times,
+            rms_values,
+            _,
+            peak_rms,
+        ) = _audio_activity_profile(str(Path(wav_path).resolve()))
+    except Exception as exc:
+        print(f"Warning: onset/RMS caption validation unavailable: {exc}")
+        return []
+
+    if peak_rms <= 0 or not rms_values:
+        return []
+
+    silent_caption_times = []
+    for timestamp, _ in tokens:
+        local_rms = [
+            value for time, value in zip(rms_times, rms_values)
+            if timestamp - 0.12 <= time <= timestamp + 0.35
+        ]
+        if not local_rms:
+            continue
+        local_peak = max(local_rms)
+        local_db = 20.0 * np.log10(max(local_peak, 1e-12) / peak_rms)
+        nearest_onset = (
+            min(abs(timestamp - onset) for onset in onset_times)
+            if onset_times else float("inf")
+        )
+        is_extreme_silence = local_db <= extreme_silence_db_threshold
+        is_low_energy_without_onset = (
+            local_db <= silent_db_threshold
+            and nearest_onset > silent_onset_tolerance
+        )
+        if is_extreme_silence or is_low_energy_without_onset:
+            silent_caption_times.append(timestamp)
+
+    return silent_caption_times
+
+
+def remove_near_silent_captions(caption: str, wav_path: str) -> str:
+    """Remove only captions confidently placed in near-silent audio."""
+    tokens = parse_caption(caption)
+    if not tokens:
+        return caption
+
+    silent_times = near_silent_caption_times(tokens, wav_path)
+    if not silent_times:
+        return caption
+
+    silent_keys = {round(timestamp, 6) for timestamp in silent_times}
+    kept = [
+        (timestamp, token)
+        for timestamp, token in tokens
+        if round(timestamp, 6) not in silent_keys
+    ]
+    removed_text = ", ".join(f"{timestamp:.2f}s" for timestamp in silent_times)
+    print(f"Removed near-silent captions at: {removed_text}")
+    return " ".join(
+        f"[{timestamp:.2f}] {token}"
+        for timestamp, token in kept
+    )
+
+
+def onset_rms_validation_error(
+    tokens,
+    wav_path: str,
+    clear_attack_mode: bool,
+    caption_onset_tolerance: float = 0.20,
+    min_clear_attack_coverage: float = 0.75,
+    max_consecutive_missed_gap: float = 0.75,
+) -> str | None:
+    """Cross-check captions against audible onsets and local RMS energy."""
+    import numpy as np
+
+    silent_caption_times = near_silent_caption_times(tokens, wav_path)
+    if silent_caption_times:
+        times = ", ".join(f"{value:.2f}s" for value in silent_caption_times[:8])
+        return (
+            "captions are placed in near-silent audio without a nearby onset at "
+            f"{times}"
+        )
+
+    try:
+        onset_times, onset_strengths, _, _, _, _ = _audio_activity_profile(
+            str(Path(wav_path).resolve())
+        )
+    except Exception as exc:
+        print(f"Warning: onset caption validation unavailable: {exc}")
+        return None
+
+    if not clear_attack_mode or not onset_times or not onset_strengths:
+        return None
+
+    strength_threshold = float(np.percentile(onset_strengths, 60))
+    strong_onsets = [
+        onset for onset, strength in zip(onset_times, onset_strengths)
+        if strength >= strength_threshold
+    ]
+    if not strong_onsets:
+        return None
+
+    caption_times = [timestamp for timestamp, _ in tokens]
+    missed = [
+        onset for onset in strong_onsets
+        if not any(
+            abs(onset - caption_time) <= caption_onset_tolerance
+            for caption_time in caption_times
+        )
+    ]
+    coverage = 1.0 - (len(missed) / len(strong_onsets))
+    missed_set = set(missed)
+    consecutive_missed = next(
+        (
+            (left, right)
+            for left, right in zip(strong_onsets, strong_onsets[1:])
+            if (
+                left in missed_set
+                and right in missed_set
+                and right - left <= max_consecutive_missed_gap
+            )
+        ),
+        None,
+    )
+    if coverage < min_clear_attack_coverage or consecutive_missed:
+        times = ", ".join(f"{value:.2f}s" for value in missed[:8])
+        consecutive_text = ""
+        if consecutive_missed:
+            consecutive_text = (
+                f"; consecutive strong attacks are both missing at "
+                f"{consecutive_missed[0]:.2f}s and {consecutive_missed[1]:.2f}s"
+            )
+        return (
+            f"clear-attack caption coverage is only {coverage:.0%}; strong audible "
+            f"attacks lack nearby captions around {times}{consecutive_text}"
+        )
+
+    return None
+
+
+def caption_validation_error(
+    caption: str,
+    wav_path: str,
+    clear_attack_mode: bool = False,
+) -> str | None:
     if "..." in caption or "…" in caption:
         return "ellipsis/omission marker is not allowed"
+    if re.search(r"\[\d+\.?\d*\]\s*$", caption):
+        return "final timestamp has no Hangul caption token"
 
     tokens = parse_caption(caption)
     if not tokens:
@@ -492,7 +846,7 @@ def caption_validation_error(caption: str, wav_path: str) -> str | None:
 
     if first_time > 0.35:
         return "caption omits the beginning"
-    if duration > 4.0 and last_time < duration * 0.75:
+    if duration > 4.0 and last_time < duration * 0.95:
         return "caption ends too early"
 
     seen_times = set()
@@ -506,6 +860,18 @@ def caption_validation_error(caption: str, wav_path: str) -> str | None:
     if bad_tokens:
         return f"non-Hangul token found: {bad_tokens[0]}"
 
+    mid_gap_error = active_mid_gap_validation_error(tokens, wav_path)
+    if mid_gap_error:
+        return mid_gap_error
+
+    onset_rms_error = onset_rms_validation_error(
+        tokens,
+        wav_path,
+        clear_attack_mode=clear_attack_mode,
+    )
+    if onset_rms_error:
+        return onset_rms_error
+
     return None
 
 
@@ -513,8 +879,13 @@ def append_caption_retry_instruction(messages, reason: str, wav_path: str) -> No
     correction = (
         "\n\nCorrection required. The previous caption was invalid because: "
         f"{reason}. Regenerate from scratch. Do not summarize or use ellipses. "
-        "Use only Hangul syllables inside caption tokens. Keep the caption natural "
-        "and follow the audible rhythm from beginning to end."
+        "Every timestamp must be enclosed in square brackets, exactly like "
+        "[0.00] 가 [0.45] 나. Use only Hangul syllables inside caption tokens. "
+        "Keep the caption natural and follow the audible rhythm from beginning to end. "
+        "Do not leave a multi-second timestamp gap when audible attacks and active "
+        "instrument sound continue inside that interval; add captions near the "
+        "meaningful audible changes. Long gaps are allowed only for genuine silence "
+        "or one genuinely unchanged sustained sound."
     )
     for content in messages[0]["content"]:
         if content.get("type") == "text":
@@ -524,6 +895,12 @@ def append_caption_retry_instruction(messages, reason: str, wav_path: str) -> No
 
 def sanitize_caption(caption: str, wav_path: str) -> str:
     tokens = parse_caption(caption)
+    if not tokens:
+        loose_regex = re.compile(r"\[?(\d+\.?\d*)\]?\s*([가-힣]+)")
+        tokens = [
+            (float(timestamp), token)
+            for timestamp, token in loose_regex.findall(caption)
+        ]
     duration = audio_duration_seconds(wav_path)
     end_limit = max(0.0, duration - 0.2)
 
@@ -548,11 +925,29 @@ def sanitize_caption(caption: str, wav_path: str) -> str:
     return " ".join(f"[{t:.2f}] {tok}" for t, tok in cleaned)
 
 
-def generate_valid_caption(model, messages, wav_path: str, max_attempts: int = 3) -> str:
+def generate_valid_caption(
+    model,
+    messages,
+    wav_path: str,
+    max_attempts: int = 3,
+    clear_attack_mode: bool | None = None,
+) -> str:
     caption = ""
+    if clear_attack_mode is None:
+        prompt_text = " ".join(
+            str(content.get("text", ""))
+            for content in messages[0].get("content", [])
+            if content.get("type") == "text"
+        )
+        clear_attack_mode = "Behavior mode: clear-attack" in prompt_text
     for attempt in range(max_attempts):
         caption = llm_api(model, messages, temp=0.5 if attempt else 0.7)
-        reason = caption_validation_error(caption, wav_path)
+        caption = remove_near_silent_captions(caption, wav_path)
+        reason = caption_validation_error(
+            caption,
+            wav_path,
+            clear_attack_mode=clear_attack_mode,
+        )
         if reason is None:
             return caption
         append_caption_retry_instruction(messages, reason, wav_path)
@@ -560,7 +955,7 @@ def generate_valid_caption(model, messages, wav_path: str, max_attempts: int = 3
 
 
 def caption_ends_too_early(caption: str, wav_path: str,
-                           min_coverage: float = 0.75) -> bool:
+                           min_coverage: float = 0.95) -> bool:
     tokens = parse_caption(caption)
     if not tokens:
         return False
@@ -622,7 +1017,10 @@ def annotate_and_show(wav_path, use_design_prompt=True,
                 'attack': audio_feature_df['attack'] if 'attack' in audio_feature_df else None,
                 'envelope': audio_feature_df['envelope'] if 'envelope' in audio_feature_df else None,
                 'onset_strength': audio_feature_df['onset_strength'] if 'onset_strength' in audio_feature_df else None,
+                'audio_onsets': audio_feature_df['audio_onsets'] if 'audio_onsets' in audio_feature_df else [],
+                'duration': audio_feature_df['duration'] if 'duration' in audio_feature_df else None,
                 'resonance': audio_feature_df['resonance'] if 'resonance' in audio_feature_df else None,
+                'notes': audio_feature_df['notes'] if 'notes' in audio_feature_df else [],
             }
             instrument_predictions = audio_feature_df['top5_instruments'] if 'top5_instruments' in audio_feature_df else None
         else:
@@ -643,6 +1041,8 @@ def annotate_and_show(wav_path, use_design_prompt=True,
                           'envelope': features['envelope'],
                           'envelop': features['envelope'],
                           'onset_strength': features['onset_strength'],
+                          'audio_onsets': features.get('audio_onsets', []),
+                          'duration': features.get('duration'),
                           'resonance': features['resonance'],
                           'top5_instruments': instrument_predictions,
                           'notes': features.get('notes', [])}
@@ -657,7 +1057,13 @@ def annotate_and_show(wav_path, use_design_prompt=True,
     # print("🔎 Prompt length:", len(text_only.split()) if text_only else "N/A")
     # print("🔍 Prompt preview:\n", text_only[:500], "...")  # Preview only the beginning
 
-    caption = generate_caption_with_end_retry(model, messages, wav_path)
+    clear_attack_mode = is_clear_attack_behavior(wav_path, music_features)
+    caption = generate_valid_caption(
+        model,
+        messages,
+        wav_path,
+        clear_attack_mode=clear_attack_mode,
+    )
 
     messages[0]["content"] = [c for c in messages[0]["content"]
                               if c["type"] != "input_audio"]
@@ -711,57 +1117,118 @@ def annotate_and_show(wav_path, use_design_prompt=True,
     except Exception as e:
         print(f"Warning: audio text visualization failed: {e}")
 
+    try:
+        bounce_video_path = join(
+            output_path,
+            f"{no_extension}{f'-{postfix}' if postfix else ''}-audio_text_bounce.mp4",
+        )
+        visualize_captions_bounce_video(
+            wav_path,
+            tokens,
+            out_path=bounce_video_path,
+            feature_row=music_features,
+            audio_path=wav_path,
+        )
+        bounce_overlay_path = join(
+            output_path,
+            f"{no_extension}{f'-{postfix}' if postfix else ''}"
+            "-audio_text_bounce_overlay.mp4",
+        )
+        render_bounce_overlay(
+            wav_path,
+            bounce_video_path,
+            bounce_overlay_path,
+        )
+        if verbose:
+            print(f"Saved audio text bounce video: {bounce_video_path}")
+    except Exception as e:
+        print(f"Warning: audio text bounce visualization failed: {e}")
+
+    try:
+        karaoke_video_path = join(
+            output_path,
+            f"{no_extension}{f'-{postfix}' if postfix else ''}-audio_text_karaoke.mp4",
+        )
+        visualize_captions_karaoke_video(
+            wav_path,
+            tokens,
+            out_path=karaoke_video_path,
+            feature_row=music_features,
+            audio_path=wav_path,
+        )
+        karaoke_overlay_path = join(
+            output_path,
+            f"{no_extension}{f'-{postfix}' if postfix else ''}"
+            "-audio_text_karaoke_overlay.mp4",
+        )
+        render_karaoke_overlay(
+            wav_path,
+            karaoke_video_path,
+            karaoke_overlay_path,
+        )
+        if verbose:
+            print(f"Saved audio text karaoke video: {karaoke_video_path}")
+    except Exception as e:
+        print(f"Warning: audio text karaoke visualization failed: {e}")
+
 
     # visualize(mp3_path, output_path, tokens, font_dir='fonts', postfix=postfix, verbose=verbose)
     # render_video(mp3_path, tokens, output_path, hop=0.25, font_dir='fonts', fps=30, postfix=postfix, verbose=verbose)
     # render_plot_video(mp3_path, tokens, output_path, hop=0.25, font_dir='fonts', fps=30, postfix="postfix", verbose=verbose)
 
-    render_plot_video(
-        wav_path=wav_path,
-        tokens=tokens,
-        output_path=output_path,
-        text_pop_effect=False,
-        progress_bar=True,
-        font_dir="fonts",
-        postfix="type1"
-    )
-    render_plot_video(
-        wav_path=wav_path,
-        tokens=tokens,
-        output_path=output_path,
-        text_pop_effect=True,
-        progress_bar=False,
-        font_dir="fonts",
-        postfix="type3"
-    )
-    render_circle(
-        wav_path=wav_path,
-        tokens=tokens,
-        output_path=output_path,
-        progress_bar=False,
-        postfix="circle_grad",
-        bouncing_mode=False
-    )
-    render_circle(
-        wav_path=wav_path,
-        tokens=tokens,
-        output_path=output_path,
-        progress_bar=False,
-        size_effect=False,
-        bouncing_mode=True,
-        postfix="circle_flat",
-        hide_axes=True,
-    )
-    render_circle(
-        wav_path=wav_path,
-        tokens=tokens,
-        output_path=output_path,
-        progress_bar=True,
-        size_effect=False,
-        bouncing_mode=False,
-        postfix="circle_prog",
-        circle_radius_factor=0.8
-    )
+    # Keep the legacy render implementations available, but do not run them
+    # during the standard MuCap V2 pipeline unless explicitly re-enabled here.
+    enable_legacy_renders = False
+    skip_legacy_renders = not enable_legacy_renders
+    if not skip_legacy_renders:
+        render_plot_video(
+            wav_path=wav_path,
+            tokens=tokens,
+            output_path=output_path,
+            text_pop_effect=False,
+            progress_bar=True,
+            font_dir="fonts",
+            postfix="type1"
+        )
+        render_plot_video(
+            wav_path=wav_path,
+            tokens=tokens,
+            output_path=output_path,
+            text_pop_effect=True,
+            progress_bar=False,
+            font_dir="fonts",
+            postfix="type3"
+        )
+        render_circle(
+            wav_path=wav_path,
+            tokens=tokens,
+            output_path=output_path,
+            progress_bar=False,
+            postfix="circle_grad",
+            bouncing_mode=False
+        )
+        render_circle(
+            wav_path=wav_path,
+            tokens=tokens,
+            output_path=output_path,
+            progress_bar=False,
+            size_effect=False,
+            bouncing_mode=True,
+            postfix="circle_flat",
+            hide_axes=True,
+        )
+        render_circle(
+            wav_path=wav_path,
+            tokens=tokens,
+            output_path=output_path,
+            progress_bar=True,
+            size_effect=False,
+            bouncing_mode=False,
+            postfix="circle_prog",
+            circle_radius_factor=0.8
+        )
+    else:
+        print("Skipping disabled type1/type2/type3/type4 and circle renders.")
 
     base_name = splitext(basename(wav_path))[0]
     feature_json = join(
@@ -769,19 +1236,20 @@ def annotate_and_show(wav_path, use_design_prompt=True,
         f"{base_name}-{postfix}-features.json"
     )
     
-    extract_features(
-        audio_path=wav_path,
-        output_json=feature_json,
-        max_events=len(caption)  # Match the number of text characters
-    )
+    if not skip_legacy_renders:
+        extract_features(
+            audio_path=wav_path,
+            output_json=feature_json,
+            max_events=len(caption)  # Match the number of text characters
+        )
 
-    render_text_from_json_no_moviepy(
-        text=caption,
-        feature_json=feature_json,
-        audio_path=wav_path,
-        output_path=join(output_path, f"{base_name}-type2.mp4"),
-        window_size=14  # letters per screen
-    )
+        render_text_from_json_no_moviepy(
+            text=caption,
+            feature_json=feature_json,
+            audio_path=wav_path,
+            output_path=join(output_path, f"{base_name}-type2.mp4"),
+            window_size=14  # letters per screen
+        )
     # render_subtitle(
     #     wav_path=wav_path,
     #     tokens=tokens,
@@ -828,22 +1296,23 @@ def annotate_and_show(wav_path, use_design_prompt=True,
     # Use human annotation if available, otherwise use LLM caption
     display_text = human_annotation_text if human_annotation_text else caption
     
-    annotation_render(
-        wav_path=wav_path,
-        output_path=output_path,
-        display_text=display_text,
-        font_dir='fonts',
-        fps=1,
-        dark_mode=True,
-        postfix="type4"
-    )
+    if not skip_legacy_renders:
+        annotation_render(
+            wav_path=wav_path,
+            output_path=output_path,
+            display_text=display_text,
+            font_dir='fonts',
+            fps=1,
+            dark_mode=True,
+            postfix="type4"
+        )
 
     if save_spectrogram is not None:
         save_spectrogram(mp3_path, output_path, sr=44100, postfix=postfix)
     else:
         print("Warning: extract_spectogram.py not found; skipping spectrogram output.")
 
-    haptic_path = generate_haptic_output(wav_path, output_path)
+    haptic_path = generate_haptic_output(wav_path, output_path, music_features)
     print(f"Saved haptic WAV: {haptic_path}")
 
 

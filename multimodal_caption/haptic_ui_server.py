@@ -20,8 +20,8 @@ MUCAP_OUTPUT_DIR = PROJECT_ROOT / "mucap" / "output"
 MUCAP_INPUT_DIR = PROJECT_ROOT / "mucap" / "input"
 # DirectSound is used because this Windows driver fails when two WASAPI
 # devices are opened concurrently (PortAudio PaErrorCode -9999).
-AUDIO_DEVICE = "6"   # Realtek HD Audio 2nd output (earphones/headset)
-HAPTIC_DEVICE = "9"  # US05
+AUDIO_DEVICE =  "Windows DirectSound::Realtek HD Audio 2nd output"
+HAPTIC_DEVICE = "Windows DirectSound::US05"
 HAPTIC_GAIN = 1.0
 # US05 is a stereo output. dual_play duplicates the mono haptic WAV to L/R,
 # so a single transducer works whichever output jack/channel it is wired to.
@@ -413,6 +413,6 @@ if __name__ == "__main__":
     (ROOT / "static").mkdir(exist_ok=True)
     print("MuCap 결과 및 햅틱 재생 UI: http://127.0.0.1:8001")
     print(f"MuCap output: {MUCAP_OUTPUT_DIR}")
-    print(f"Audio device: {AUDIO_DEVICE} (Realtek earphones/headset)")
-    print(f"Haptic device: {HAPTIC_DEVICE} (US05, same signal on L/R)")
+    print(f"Audio device: {AUDIO_DEVICE}")
+    print(f"Haptic device: {HAPTIC_DEVICE} (same signal on L/R)")
     app.run(host="127.0.0.1", port=8001, debug=False, threaded=True)

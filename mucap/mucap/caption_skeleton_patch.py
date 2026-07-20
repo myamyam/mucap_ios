@@ -81,6 +81,39 @@ def _format_sampled_cluster_times(cluster: list[float]) -> str:
     return ", ".join(pieces)
 
 
+def _stored_audio_onsets(feature_row: dict | None) -> tuple[list[float], float | None]:
+    """Read onset timestamps cached during the initial feature extraction."""
+    if not feature_row:
+        return [], None
+
+    raw = feature_row.get("audio_onsets", [])
+    if isinstance(raw, str):
+        try:
+            raw = ast.literal_eval(raw)
+        except (ValueError, SyntaxError):
+            raw = []
+    if not isinstance(raw, (list, tuple)):
+        raw = []
+
+    onsets = []
+    for value in raw:
+        try:
+            onset = float(value)
+        except (TypeError, ValueError):
+            continue
+        if math.isfinite(onset) and onset >= 0:
+            onsets.append(onset)
+
+    try:
+        duration = float(feature_row.get("duration"))
+    except (TypeError, ValueError):
+        duration = None
+    if duration is not None and (not math.isfinite(duration) or duration <= 0):
+        duration = None
+
+    return sorted(onsets), duration
+
+
 def _parse_top5_for_hint(value) -> list[tuple[str, float]]:
     if isinstance(value, list):
         parsed = value
@@ -294,13 +327,25 @@ def build_caption_anchor_hint(feature_row,
                               min_rest_gap: float = 0.35,
                               min_anchor_gap: float = 0.0,
                               merge_window: float = 0.0,
-                              compact_sustained: bool = False) -> str | None:
+                              compact_sustained: bool = False,
+                              expanded_string_sustained: bool = False,
+                              expanded_wind_sustained: bool = False,
+                              expanded_generic_sustained: bool = False) -> str | None:
     compact_long_gap = 0.0
     if compact_sustained:
-        max_items = min(max_items, 16)
         min_pitch_step = max(min_pitch_step, 1.5)
-        min_anchor_gap = max(min_anchor_gap, 0.35)
-        merge_window = max(merge_window, 0.25)
+        if (
+            expanded_string_sustained
+            or expanded_wind_sustained
+            or expanded_generic_sustained
+        ):
+            max_items = max(max_items, 24)
+            min_anchor_gap = max(min_anchor_gap, 0.25)
+            merge_window = max(merge_window, 0.18)
+        else:
+            max_items = min(max_items, 16)
+            min_anchor_gap = max(min_anchor_gap, 0.35)
+            merge_window = max(merge_window, 0.25)
         compact_long_gap = 1.00
 
     row = dict(feature_row)
@@ -402,7 +447,49 @@ def build_caption_anchor_hint(feature_row,
     anchor_label = (
         "compact phrase anchors" if compact_sustained else "caption anchors"
     )
-    mode_instruction = (
+    if expanded_string_sustained:
+        mode_instruction = (
+        "For bowed string-like textures, these are phrase-start candidates, "
+        "not a beat grid. During active sustained phrases, use about 80-100% of "
+        "the meaningful listed anchors. Skip or merge anchors only when the sound "
+        "is genuinely stable or the detected changes are merely repeated vibrato "
+        "or the same unchanging texture. Do not omit a clear pitch-direction "
+        "change, accent, energy change, new melodic note, or rest. The listed "
+        "anchors are representative boundary cues, not an exhaustive set of "
+        "musical events. The audio itself has higher priority than this anchor "
+        "list: if an audible meaningful change occurs at an unlisted timestamp, "
+        "add a caption near that audible change even though no anchor is listed. "
+        "Do not invent changes that are not audible, and do not force mechanical "
+        "equal spacing. A caption may still cover multiple anchors only when the "
+        "sound continues as one genuinely stable phrase. "
+        )
+    elif expanded_wind_sustained:
+        mode_instruction = (
+        "For wind-like sustained instrumental textures, these are phrase-start "
+        "candidates, not a beat grid. During active sustained phrases, use about "
+        "80-100% of the meaningful listed anchors. Skip or merge anchors only when "
+        "the sound is genuinely stable or the detected changes are merely repeated "
+        "airflow, vibrato, or the same unchanging texture. Do not omit a clear "
+        "pitch-direction change, accent, energy change, new melodic note, or rest. "
+        "The audio itself has higher priority than this non-exhaustive anchor list: "
+        "if a meaningful audible change occurs at an unlisted timestamp, add a "
+        "caption near that change. Do not invent inaudible changes or force "
+        "mechanical equal spacing. "
+        )
+    elif expanded_generic_sustained:
+        mode_instruction = (
+        "For generic sustained instrumental textures, these are phrase-start "
+        "candidates, not a beat grid. During active sustained phrases, use about "
+        "80-100% of the meaningful listed anchors. Skip or merge anchors only when "
+        "the sound is genuinely stable or the detected changes repeat the same "
+        "unchanging texture. Do not omit a clear pitch-direction change, accent, "
+        "energy change, new melodic note, or rest. The audio itself has higher "
+        "priority than this non-exhaustive anchor list: if a meaningful audible "
+        "change occurs at an unlisted timestamp, add a caption near that change. "
+        "Do not invent inaudible changes or force mechanical equal spacing. "
+        )
+    elif compact_sustained:
+        mode_instruction = (
         "For sustained or wind-like textures, these are phrase-start candidates, "
         "not a beat grid: use only a sparse subset, usually at least 0.35s apart, "
         "and prefer longer Hangul tokens over adding more timestamps. For active "
@@ -413,12 +500,13 @@ def build_caption_anchor_hint(feature_row,
         "audible changes between listed anchors. A caption may cover a phrase "
         "spanning multiple anchors, and a listed anchor may be skipped if the "
         "phrase continues naturally. "
-        if compact_sustained else
+        )
+    else:
+        mode_instruction = (
         "Choose a subset according to the behavior mode: sustained textures should "
         "group adjacent anchors into phrase-level captions, clear attacks may use "
-        "anchors more densely, and mixed audio should combine attack and pitch-change "
-        "anchors. "
-    )
+        "anchors more densely. "
+        )
     return (
         f"Preferred {anchor_label} from detected note/pitch changes "
         f"({len(anchors)} candidates, sampled): [{', '.join(pieces)}]. "
@@ -523,13 +611,18 @@ def _caption_behavior_analysis(feature_row,
         f"long_note_ratio={long_ratio:.2f}, short_note_ratio={short_ratio:.2f}, "
         f"gap_ratio={gap_ratio:.2f}, pitch_change_ratio={pitch_change_ratio:.2f}"
     )
-    mode = "mixed"
+    # Binary top-level behavior classification:
+    # preserve the existing sustained/clear-attack thresholds and route only
+    # the previously ambiguous fallback into sustained-texture. Sustained
+    # texture is subdivided later into string-like, wind-like, or
+    # generic-sustain by _connected_texture_style().
+    mode = "sustained-texture"
     if sustained_like:
         mode = "sustained-texture"
     elif clear_attack_like:
         mode = "clear-attack"
 
-    return {
+    behavior = {
         "mode": mode,
         "stats": stats,
         "note_count": note_count,
@@ -542,6 +635,33 @@ def _caption_behavior_analysis(feature_row,
         "pitch_change_ratio": pitch_change_ratio,
     }
 
+    # Pedalled piano can look continuous in the pitch-derived notes and can
+    # also be mislabeled as a bowed string by the instrument predictor. Limit
+    # this correction to sustained inputs that would otherwise enter the
+    # string-like branch, so wind-like and generic-sustain remain unchanged.
+    attack = str(feature_row.get("attack", "")).strip().lower()
+    envelope = str(feature_row.get("envelope", "")).strip().lower()
+    transient_like = attack == "sharp" or envelope == "transient"
+    string_candidate = bool(_is_confident_string_context(feature_row))
+    if not string_candidate:
+        string_candidate = _is_weak_string_texture_context(
+            feature_row,
+            behavior,
+        )
+
+    piano_pedal_attack_like = (
+        behavior["mode"] == "sustained-texture"
+        and string_candidate
+        and transient_like
+        and median_duration >= 0.38
+        and ratio < 1.45
+    )
+    if piano_pedal_attack_like:
+        behavior["mode"] = "clear-attack"
+        behavior["piano_pedal_attack_override"] = True
+
+    return behavior
+
 
 def _caption_behavior_hint(analysis: dict | None) -> str | None:
     if not analysis:
@@ -549,6 +669,24 @@ def _caption_behavior_hint(analysis: dict | None) -> str | None:
 
     stats = analysis["stats"]
     mode = analysis["mode"]
+    if mode == "clear-attack" and analysis.get("piano_pedal_attack_override"):
+        return (
+            "Caption behavior analysis from audio only: " + stats +
+            ". Behavior mode: clear-attack with pedalled-piano correction. "
+            "The note attacks are distinct, but pedal and resonance may connect the "
+            "sound after each attack; do not describe these notes as uniformly short "
+            "or fully separated. Place captions near the audible key attacks, and "
+            "match each Hangul token length to the actual sustain and resonance. "
+            "Possible references include short attacks such as 딩, 땡, 띵, or 딴; "
+            "medium resonances such as 따란, 따앙, or 따단; and longer resonances or "
+            "connected figures such as 따라랑, 따라란, 따아안, or 두웅. These are "
+            "references, not a fixed "
+            "vocabulary. Do not reduce the full passage to one-syllable repeats, and "
+            "do not mechanically alternate a fixed pair. Change the consonant, vowel, "
+            "and token length only when pitch, register, duration, loudness, chord "
+            "density, attack, or resonance audibly changes. Follow the actual audio "
+            "timing rather than forcing equal spacing."
+        )
     if mode == "sustained-texture":
         return (
             "Caption behavior analysis from audio only: " + stats +
@@ -563,17 +701,32 @@ def _caption_behavior_hint(analysis: dict | None) -> str | None:
             "Caption behavior analysis from audio only: " + stats +
             ". Behavior mode: clear-attack. Detected notes are short and separated. "
             "Use concise Hangul captions near the actual attacks, but still avoid "
-            "mechanically even spacing when the audio timing is uneven."
+            "mechanically even spacing when the audio timing is uneven. For piano-like "
+            "or clearly attacked instrumental notes, possible references include "
+            "딩, 땡, 띵, 딴, 따란, 따앙, 따단, 따라랑, 따라란, 따아안, 둥, "
+            "두웅, and 챙. "
+            "These are references rather than a fixed vocabulary: do not alternate "
+            "only one or two examples, and change the consonant, vowel, or token length "
+            "only when pitch, register, duration, loudness, chord density, attack, or "
+            "resonance audibly changes."
         )
     return (
         "Caption behavior analysis from audio only: " + stats +
-        ". Behavior mode: mixed. Balance separate attack captions with sustained "
-        "phrase captions according to audible changes; do not rely on equal spacing."
+        ". Behavior mode: sustained-texture. Use connected phrase-level captions "
+        "unless there is a clearly audible new attack, rest, or melodic change."
     )
 
 
 def _caption_behavior_from_wav(wav_path: str | None,
                                feature_row: dict | None) -> dict | None:
+    stored_onsets, stored_duration = _stored_audio_onsets(feature_row)
+    if stored_onsets and stored_duration is not None:
+        return _caption_behavior_analysis(
+            feature_row,
+            stored_onsets,
+            stored_duration,
+        )
+
     if not wav_path:
         return None
     try:
@@ -595,16 +748,20 @@ def build_audio_rapid_onset_hint(wav_path: str,
                                  phrase_mode: bool = False,
                                  string_mode: bool = False,
                                  feature_row: dict | None = None) -> str | None:
-    try:
-        import librosa
-        y, sr = librosa.load(wav_path, sr=22050, mono=True)
-        duration = len(y) / sr if sr else 0.0
-        onsets = librosa.onset.onset_detect(
-            y=y, sr=sr, units='time', backtrack=False
-        )
-        onsets = [float(t) for t in onsets]
-    except Exception:
-        return None
+    onsets, stored_duration = _stored_audio_onsets(feature_row)
+    if onsets and stored_duration is not None:
+        duration = stored_duration
+    else:
+        try:
+            import librosa
+            y, sr = librosa.load(wav_path, sr=22050, mono=True)
+            duration = len(y) / sr if sr else 0.0
+            onsets = librosa.onset.onset_detect(
+                y=y, sr=sr, units='time', backtrack=False
+            )
+            onsets = [float(t) for t in onsets]
+        except Exception:
+            return None
 
     if not onsets:
         return None
@@ -658,14 +815,46 @@ def build_audio_rapid_onset_hint(wav_path: str,
         )
     behavior_suffix = (" " + behavior_text) if behavior_text else ""
     texture_style = _connected_texture_style(feature_row, behavior, string_mode)
+    if behavior and behavior.get("piano_pedal_attack_override"):
+        return (
+            "Rapid onset hint from audio: " + "; ".join(parts) +
+            "." + hidden_text + late_final_text + behavior_suffix +
+            " For pedalled piano, raw audio onsets can include the initial key attack, "
+            "pedal resonance, and secondary energy changes. Do not create a separate "
+            "caption for weak resonance-only fluctuations, but do not discard clearly "
+            "audible key attacks merely because pedal resonance follows them. Rapid "
+            "sequences of distinct key attacks should keep captions near those attacks "
+            "instead of being merged into a sparse phrase-level summary. Use the "
+            "pitch-derived note attacks together with the clearly audible musical "
+            "changes. Match caption length to "
+            "the assigned note duration: a note shorter than 0.25s may use a one- or "
+            "two-syllable token; a note from 0.25s to 0.60s should normally use a "
+            "two- or three-syllable token that includes its resonance; and a note "
+            "longer than 0.60s should normally use at least three syllables or an "
+            "extended vowel/ending to express the sustain. Because this passage has "
+            "pedal resonance, one-syllable captions must not dominate the full result. "
+            "Do not repeat the same one-syllable token consecutively, and do not "
+            "mechanically alternate two short tokens. Follow actual pitch, register, "
+            "duration, chord density, loudness, attack, and resonance changes."
+        )
     connected_texture_mode = texture_style in {
         "string-like", "wind-like", "generic-sustain"
     }
     if connected_texture_mode:
+        duration_length_rule = (
+            " Match each caption token length to the locally audible note or phrase "
+            "duration: under 0.25s may use 1-2 Hangul syllables; 0.25-0.60s should "
+            "normally use 2-4 syllables; over 0.60s must normally use at least 4 "
+            "syllables; and over 1.20s should use at least 5 syllables or a clearly "
+            "extended vowel/ending. If the audio contains long sustained notes, do "
+            "not make the entire result only 2-3 syllable tokens; represent those "
+            "long sustains with 4-or-more-syllable captions. "
+        )
         if texture_style == "wind-like":
             return (
                 "Rapid onset hint from audio: " + "; ".join(parts) +
                 "." + hidden_text + late_final_text + behavior_suffix +
+                duration_length_rule +
                 " Ellipses inside timestamp lists mean additional detected onsets continue "
                 "between the shown timestamps; do not treat omitted timestamps as silence "
                 "or leave long gaps while audible notes continue. "
@@ -693,6 +882,7 @@ def build_audio_rapid_onset_hint(wav_path: str,
             return (
                 "Rapid onset hint from audio: " + "; ".join(parts) +
                 "." + hidden_text + late_final_text + behavior_suffix +
+                duration_length_rule +
                 " Ellipses inside timestamp lists mean additional detected onsets continue "
                 "between the shown timestamps; do not treat omitted timestamps as silence "
                 "or leave long gaps while audible notes continue. "
@@ -700,9 +890,12 @@ def build_audio_rapid_onset_hint(wav_path: str,
                 "often reflect continuous motion rather than separate attacks. Use "
                 "flowing phrase-level Hangul captions chosen from the actual audio "
                 "timbre, placed near audible contour, accent, energy, rest, or melody "
-                "changes. Do not default to bowed-string buzz examples or piano-like "
-                "one-syllable repeats, and do not place captions at mechanically even "
-                "intervals."
+                "changes. Neutral sustained instrumental references may include "
+                "따란, 다라란, 따라라랑, 또링, 또로롱, 도로롱, 띠리링, or 두루룽, "
+                "with token length matched to the audible sustain. These are not a "
+                "fixed vocabulary. Do not "
+                "default to bowed-string buzz examples or piano-like one-syllable "
+                "repeats, and do not place captions at mechanically even intervals."
             )
         texture_label = (
             "For bowed string-like connected sounds"
@@ -710,6 +903,7 @@ def build_audio_rapid_onset_hint(wav_path: str,
         return (
             "Rapid onset hint from audio: " + "; ".join(parts) +
             "." + hidden_text + late_final_text + behavior_suffix +
+            duration_length_rule +
             " Ellipses inside timestamp lists mean additional detected onsets continue "
             "between the shown timestamps; do not treat omitted timestamps as silence "
             "or leave long gaps while audible notes continue. " +
@@ -726,10 +920,25 @@ def build_audio_rapid_onset_hint(wav_path: str,
             "contour, accent, energy, rest, or melody clearly changes. Express longer "
             "stable sustain inside the Hangul token by extending vowels or flowing "
             "syllable runs instead of adding evenly spaced timestamps. Flowing sustained "
-            "examples may include short forms like 지잉 or 찌잉, medium forms like 지이잉, "
-            "찌이잉, 띠라라, or 이이잉, and long forms like 지이이잉, 찌이이이잉, "
-            "or 띠라라라라. Do not cycle these examples repeatedly or place them at "
-            "mechanically even intervals. Choose each caption from the local sound change. "
+            "examples may include short forms like 지잉, 따란, 찌잉, or 따안; medium "
+            "forms like 지이잉, 띠라라, 따라라, 디라라, 라라라, or 찌이잉; and "
+            "long forms like 지이이잉, 띠라라라라, 따라라라라, 디라라라라, "
+            "라라라라라, or 찌이이이잉. Do not cycle "
+            "these examples repeatedly or place them at mechanically even intervals. "
+            "Do not let the 지잉/찌잉 family dominate the full caption. Reserve that "
+            "buzz-like family for genuinely stable bow friction, tremble, or nearly "
+            "unchanging sustain. When the audible melody moves, the pitch contour "
+            "changes direction, or several distinct notes form a connected figure, "
+            "prefer melodic families such as 따란/따안, 띠라라/따라라, or the softer "
+            "디라라/라라라 family and lengthen "
+            "them to match the phrase. In any active varied string passage with multiple "
+            "captions, include both families: use at least one 지잉/찌잉-family caption "
+            "for an audible bow-friction or stable-sustain moment, and at least one "
+            "따란/띠라라/따라라/디라라/라라라-family caption for an audible "
+            "melodic-motion moment. "
+            "Only a genuinely unchanged single sustain may remain in one family. Do not "
+            "use the same 지/찌 family for more than two consecutive captions unless the "
+            "audio is truly unchanged. Choose each caption from the local sound change. "
             "Avoid percussive one-syllable repeats like 딩 딩 딩 or 띵 띵 띵 for "
             "sustained connected sounds."
         )
@@ -771,6 +980,8 @@ def _skeleton_text_with_rapid_hint(row: dict, wav_path: str | None = None) -> st
     phrase_mode = "articulation: sustained" in text
     string_mode = _is_confident_string_context(row)
     texture_behavior = _caption_behavior_from_wav(wav_path, row)
+    if texture_behavior and texture_behavior.get("piano_pedal_attack_override"):
+        phrase_mode = False
     texture_style = _connected_texture_style(row, texture_behavior, string_mode)
     compact_anchor = (
         texture_behavior is not None
@@ -783,6 +994,9 @@ def _skeleton_text_with_rapid_hint(row: dict, wav_path: str | None = None) -> st
     anchor_hint = build_caption_anchor_hint(
         row,
         compact_sustained=compact_anchor,
+        expanded_string_sustained=texture_style == "string-like",
+        expanded_wind_sustained=texture_style == "wind-like",
+        expanded_generic_sustained=texture_style == "generic-sustain",
     )
     if anchor_hint:
         hints.append(anchor_hint)

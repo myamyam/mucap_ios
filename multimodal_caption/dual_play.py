@@ -47,28 +47,44 @@ from scipy.signal import resample_poly
 
 def list_output_devices():
     devs = sd.query_devices()
+    hostapis = sd.query_hostapis()
     rows = []
     for i, d in enumerate(devs):
         if d.get("max_output_channels", 0) > 0:
-            rows.append((i, d["name"], d["hostapi"], d.get("default_samplerate", None), d["max_output_channels"]))
+            hostapi_name = hostapis[d["hostapi"]]["name"]
+            rows.append((i, d["name"], hostapi_name, d.get("default_samplerate", None), d["max_output_channels"]))
     print("Output devices:")
     for i, name, hostapi, dsr, ch in rows:
         print(f"  [{i}] {name} | hostapi={hostapi} | default_sr={dsr} | max_out_ch={ch}")
 
 
 def resolve_device(dev: str) -> int:
-    # Accept numeric index or substring match in name
+    # Accept a numeric index, a device-name match, or "host API::device name".
+    # The qualified form is stable across device index changes and also avoids
+    # ambiguity when Windows exposes the same device through multiple APIs.
     if dev.isdigit():
         return int(dev)
+
+    hostapi_query = None
+    device_query = dev
+    if "::" in dev:
+        hostapi_query, device_query = (part.strip() for part in dev.split("::", 1))
+
     devs = sd.query_devices()
+    hostapis = sd.query_hostapis()
     cand = []
     for i, d in enumerate(devs):
-        if d.get("max_output_channels", 0) > 0 and dev.lower() in d["name"].lower():
-            cand.append((i, d["name"]))
+        if d.get("max_output_channels", 0) <= 0:
+            continue
+        hostapi_name = hostapis[d["hostapi"]]["name"]
+        if hostapi_query and hostapi_query.lower() not in hostapi_name.lower():
+            continue
+        if device_query.lower() in d["name"].lower():
+            cand.append((i, d["name"], hostapi_name))
     if not cand:
         raise ValueError(f"Could not find output device matching: {dev!r}")
     if len(cand) > 1:
-        names = ", ".join([f"[{i}] {n}" for i, n in cand[:10]])
+        names = ", ".join([f"[{i}] {n} ({h})" for i, n, h in cand[:10]])
         raise ValueError(f"Ambiguous device match for {dev!r}. Matches: {names}")
     return cand[0][0]
 

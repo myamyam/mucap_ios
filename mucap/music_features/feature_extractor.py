@@ -360,6 +360,20 @@ class AudioFeatureExtraction:
             n_fft=2048,
             hop_length=512
         )
+        onset_frames = librosa.onset.onset_detect(
+            onset_envelope=onset_env,
+            sr=sr,
+            hop_length=512,
+            backtrack=False,
+        )
+        audio_onsets = [
+            float(value)
+            for value in librosa.frames_to_time(
+                onset_frames,
+                sr=sr,
+                hop_length=512,
+            )
+        ]
         attack = 'sharp' if np.max(onset_env) > 0.5 else 'soft'
         envelope = 'transient' if attack == 'sharp' else 'sustained'
         onset_strength = float(np.mean(onset_env))
@@ -383,6 +397,8 @@ class AudioFeatureExtraction:
             "attack": attack,
             "envelope": envelope,
             "onset_strength": onset_strength,
+            "audio_onsets": audio_onsets,
+            "duration": float(duration),
             "resonance": resonance,
             "notes": notes,
             "top5_instruments": instrument_predictions,

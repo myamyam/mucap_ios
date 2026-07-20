@@ -51,7 +51,10 @@ def batch_process(input_dir, output_dir, design_prompt,
     wav_regex = join(input_dir, "**", "*.wav")
     wav_files = glob(wav_regex, recursive=True)
 
-    wav_files = [f.replace(input_dir, '')[1:] for f in wav_files]
+    wav_files = sorted(
+        f.replace(input_dir, '')[1:]
+        for f in wav_files
+    )
 
 
 

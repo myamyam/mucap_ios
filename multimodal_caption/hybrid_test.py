@@ -4,7 +4,7 @@ Hybrid haptic renderer (librosa mel-based remapping + low-frequency passthrough)
 with an AUTO policy, plus *short commands* via presets.
 
 Goal: avoid long CLI by providing:
-- simple preset:  python hybrid_auto.py --in a.wav --out b.wav --preset auto
+- simple preset:  python hybrid_auto.py --in a.wav --out b.wav --preset generic
 - optional small overrides: --strength / --low-cut / --quality
 
 Presets set sensible defaults for:
@@ -16,7 +16,7 @@ Optional:
   ffmpeg installed
 
 Examples:
-  # shortest (auto, general)
+  # shortest (generic, general)
   python hybrid_auto.py --in raining.wav --out haptic.wav
 
   # explicitly select preset
@@ -94,7 +94,7 @@ class Preset:
 
 PRESETS: dict[str, Preset] = {
     # General default: good for mixed content; preserves low; adds remap as needed.
-    "auto": Preset(),
+    "generic": Preset(),
 
     # Environmental / noise-like (rain/wind/ambience): often has plenty of low already.
     # Suppress remap more aggressively to avoid "artificial buzz".
@@ -446,7 +446,7 @@ def main():
 
         for row in rows:
             filename = (row.get("filename") or "").strip()
-            preset_name = (row.get("preset") or "auto").strip().lower()
+            preset_name = (row.get("preset") or "generic").strip().lower()
             if not filename:
                 continue
             if preset_name not in PRESETS:
