@@ -43,14 +43,17 @@ from mucap.render.audio_text_viz_video import (
 
 
 MIN_JUMP_PX = 25.0
-MAX_JUMP_PX = 80.0
+MAX_JUMP_PX = 75.0
 MIN_AIR_TIME = 0.45
 MAX_AIR_TIME = 2.50
-BOUNCE_VIDEO_SIZE = (1280, 120)
+BOUNCE_VIDEO_SIZE = (1240, 120)
 BASELINE_FROM_BOTTOM_PX = 10
 UNIFORM_FONT_SIZE = 24
 CAPTION_GAP_PX = 24
 PAGE_SIDE_MARGIN_PX = 32
+BOUNCE_PAGE_SIDE_MARGIN_PX = 20
+BOUNCE_UNIFORM_FONT_SIZE = 30
+BOUNCE_CAPTION_GAP_PX = 28
 
 
 @dataclass
@@ -152,10 +155,11 @@ def _flow_layout(
     draw,
     font,
     max_width: float | None = None,
+    gap_px: float = CAPTION_GAP_PX,
 ) -> tuple[list[float], float]:
     """Place captions in one line, tightening gaps only when width is limited."""
     caption_widths = [_text_size(draw, event.text, font)[0] for event in events]
-    gap = float(CAPTION_GAP_PX)
+    gap = float(gap_px)
     if max_width is not None and len(caption_widths) > 1:
         available_for_gaps = max_width - sum(caption_widths)
         gap = max(0.0, min(gap, available_for_gaps / (len(caption_widths) - 1)))
@@ -194,6 +198,7 @@ def _paginate_events(
     draw,
     font,
     max_width: float,
+    gap_px: float = CAPTION_GAP_PX,
 ) -> list[list[BounceCaption]]:
     """Fill each page by text width and break before crossing the right margin."""
     pages: list[list[BounceCaption]] = []
@@ -205,7 +210,7 @@ def _paginate_events(
         next_width = (
             event_width
             if not page
-            else page_width + CAPTION_GAP_PX + event_width
+            else page_width + gap_px + event_width
         )
         would_overflow = bool(page) and next_width > max_width
 
@@ -289,14 +294,15 @@ def visualize_captions_bounce_video(
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     temp_video = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False).name
-    font = _font_for_size(UNIFORM_FONT_SIZE)
+    font = _font_for_size(BOUNCE_UNIFORM_FONT_SIZE)
     sizing_image = Image.new("RGBA", (width, height), (255, 255, 255, 255))
     sizing_draw = ImageDraw.Draw(sizing_image)
     pages = _paginate_events(
         events,
         sizing_draw,
         font,
-        max_width=width - (2 * PAGE_SIDE_MARGIN_PX),
+        max_width=width - (2 * BOUNCE_PAGE_SIDE_MARGIN_PX),
+        gap_px=BOUNCE_CAPTION_GAP_PX,
     )
 
     try:
@@ -319,8 +325,9 @@ def visualize_captions_bounce_video(
                 visible_events,
                 draw,
                 font,
+                gap_px=BOUNCE_CAPTION_GAP_PX,
             )
-            page_offset_x = float(PAGE_SIDE_MARGIN_PX)
+            page_offset_x = float(BOUNCE_PAGE_SIDE_MARGIN_PX)
 
             for event, event_center in zip(visible_events, event_centers):
                 x_center = event_center + page_offset_x

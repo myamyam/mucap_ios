@@ -29,6 +29,7 @@ def render_bounce_overlay(
         output_path,
         panel_height=120,
         bottom_offset=90,
+        panel_width=1240,
     )
 
 

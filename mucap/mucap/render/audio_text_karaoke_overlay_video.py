@@ -27,8 +27,9 @@ def render_karaoke_overlay(
         source_video,
         karaoke_video_path,
         output_path,
-        panel_height=40,
+        panel_height=42,
         bottom_offset=90,
+        panel_width=1240,
     )
 
 

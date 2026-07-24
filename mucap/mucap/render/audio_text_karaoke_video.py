@@ -17,8 +17,7 @@ from pathlib import Path
 import numpy as np
 
 from mucap.render.audio_text_bounce_video import (
-    PAGE_SIDE_MARGIN_PX,
-    UNIFORM_FONT_SIZE,
+    CAPTION_GAP_PX,
     _captions_from_result_json,
     _flow_layout,
     _paginate_events,
@@ -48,8 +47,10 @@ from mucap.render.audio_text_viz_video import (
 
 
 PENDING_OPACITY_FACTOR = 0.10
-KARAOKE_VIDEO_SIZE = (1280, 40)
+KARAOKE_VIDEO_SIZE = (1240, 42)
 BASELINE_FROM_BOTTOM_PX = 10
+KARAOKE_PAGE_SIDE_MARGIN_PX = 20
+KARAOKE_FONT_SIZE = 30
 
 
 def _draw_karaoke_group(
@@ -140,14 +141,15 @@ def visualize_captions_karaoke_video(
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     temp_video = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False).name
-    font = _font_for_size(UNIFORM_FONT_SIZE)
+    font = _font_for_size(KARAOKE_FONT_SIZE)
     sizing_image = Image.new("RGBA", (width, height), (255, 255, 255, 255))
     sizing_draw = ImageDraw.Draw(sizing_image)
     pages = _paginate_events(
         events,
         sizing_draw,
         font,
-        max_width=width - (2 * PAGE_SIDE_MARGIN_PX),
+        max_width=width - (2 * KARAOKE_PAGE_SIDE_MARGIN_PX),
+        gap_px=CAPTION_GAP_PX,
     )
 
     try:
@@ -156,7 +158,7 @@ def visualize_captions_karaoke_video(
             fps=fps,
             codec="libx264",
             quality=9,
-            macro_block_size=4,
+            macro_block_size=2,
         )
         total_frames = max(1, int(math.ceil(duration * fps)))
         for frame_index in range(total_frames):
@@ -172,7 +174,12 @@ def visualize_captions_karaoke_video(
                 else:
                     break
             visible_events = pages[page_index] if pages else []
-            event_centers, _ = _flow_layout(visible_events, draw, font)
+            event_centers, _ = _flow_layout(
+                visible_events,
+                draw,
+                font,
+                gap_px=CAPTION_GAP_PX,
+            )
             event_times = np.asarray(
                 [event.timestamp for event in visible_events],
                 dtype=float,
@@ -205,10 +212,10 @@ def visualize_captions_karaoke_video(
                 current,
                 playhead_times,
                 playhead_centers,
-            )) + PAGE_SIDE_MARGIN_PX
+            )) + KARAOKE_PAGE_SIDE_MARGIN_PX
 
             for event, event_center in zip(visible_events, event_centers):
-                x_center = event_center + PAGE_SIDE_MARGIN_PX
+                x_center = event_center + KARAOKE_PAGE_SIDE_MARGIN_PX
                 event_width = _text_size(draw, event.text, font)[0]
                 if x_center + event_width / 2.0 < 0.0:
                     continue

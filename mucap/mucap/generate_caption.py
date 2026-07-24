@@ -29,6 +29,8 @@ from mucap.render.audio_text_bounce_video import visualize_captions_bounce_video
 from mucap.render.audio_text_karaoke_video import visualize_captions_karaoke_video
 from mucap.render.audio_text_bounce_overlay_video import render_bounce_overlay
 from mucap.render.audio_text_karaoke_overlay_video import render_karaoke_overlay
+from mucap.render.audio_text_plain_video import visualize_captions_plain_video
+from mucap.render.audio_text_plain_overlay_video import render_plain_overlay
 from mucap.tokends2caption import tokens_to_caption
 try:
     from mucap.video_render import render_video
@@ -1170,6 +1172,33 @@ def annotate_and_show(wav_path, use_design_prompt=True,
             print(f"Saved audio text karaoke video: {karaoke_video_path}")
     except Exception as e:
         print(f"Warning: audio text karaoke visualization failed: {e}")
+
+    try:
+        plain_video_path = join(
+            output_path,
+            f"{no_extension}{f'-{postfix}' if postfix else ''}-audio_text_plain.mp4",
+        )
+        visualize_captions_plain_video(
+            wav_path,
+            tokens,
+            out_path=plain_video_path,
+            feature_row=music_features,
+            audio_path=wav_path,
+        )
+        plain_overlay_path = join(
+            output_path,
+            f"{no_extension}{f'-{postfix}' if postfix else ''}"
+            "-audio_text_plain_overlay.mp4",
+        )
+        render_plain_overlay(
+            wav_path,
+            plain_video_path,
+            plain_overlay_path,
+        )
+        if verbose:
+            print(f"Saved plain audio text video: {plain_video_path}")
+    except Exception as e:
+        print(f"Warning: plain audio text visualization failed: {e}")
 
 
     # visualize(mp3_path, output_path, tokens, font_dir='fonts', postfix=postfix, verbose=verbose)
