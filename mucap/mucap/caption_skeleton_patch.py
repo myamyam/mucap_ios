@@ -280,6 +280,80 @@ def _connected_texture_style(row: dict | None,
     return "generic-sustain"
 
 
+def _percussive_audio_metrics(wav_path: str | None) -> tuple[float, float] | None:
+    if not wav_path:
+        return None
+
+    try:
+        import librosa
+        import numpy as np
+
+        y, _ = librosa.load(wav_path, sr=22050, mono=True)
+        if y.size == 0:
+            return None
+
+        harmonic, percussive = librosa.effects.hpss(
+            y,
+            margin=(1.0, 1.0),
+        )
+        harmonic_energy = float(np.sum(harmonic * harmonic))
+        percussive_energy = float(np.sum(percussive * percussive))
+        separated_energy = harmonic_energy + percussive_energy
+        percussive_ratio = (
+            percussive_energy / separated_energy
+            if separated_energy > 0.0
+            else 0.0
+        )
+        spectral_flatness = float(
+            np.mean(librosa.feature.spectral_flatness(y=y))
+        )
+        return percussive_ratio, spectral_flatness
+    except Exception:
+        return None
+
+
+def _is_percussive_generic_context(row: dict | None,
+                                   behavior: dict | None,
+                                   wav_path: str | None = None) -> bool:
+    if row is None or behavior is None:
+        return False
+
+    top5 = _parse_top5_for_hint(row.get("top5_instruments", ""))
+    has_drums = any(name == "drums" for name, _ in top5)
+    attack = str(row.get("attack", "")).strip().lower()
+    envelope = str(row.get("envelope", "")).strip().lower()
+    onset_strength = _safe_float(row.get("onset_strength"))
+    onset_count = _safe_float(behavior.get("audio_onset_count"))
+    onset_to_note_ratio = _safe_float(behavior.get("onset_to_note_ratio"))
+
+    if not (attack == "sharp" or envelope == "transient"):
+        return False
+    if onset_strength < 1.30:
+        return False
+
+    # Preserve the existing predictor-backed path unchanged.
+    if (
+        has_drums
+        and onset_count >= 180
+        and onset_to_note_ratio >= 1.50
+    ):
+        return True
+
+    # If the instrument predictor missed percussion, require substantially
+    # stronger audio-only evidence before selecting the percussive prompt.
+    if onset_count < 300 or onset_to_note_ratio < 1.80:
+        return False
+
+    audio_metrics = _percussive_audio_metrics(wav_path)
+    if audio_metrics is None:
+        return False
+    percussive_ratio, spectral_flatness = audio_metrics
+    return (
+        percussive_ratio >= 0.12
+        and spectral_flatness >= 0.008
+    )
+
+
 def build_rapid_onset_hint(feature_row,
                            max_gap: float = 0.55,
                            min_cluster_size: int = 4) -> str | None:
@@ -815,8 +889,20 @@ def build_audio_rapid_onset_hint(wav_path: str,
             "near it. Omit it only if the audio clearly indicates non-musical noise "
             "or an analysis artifact. Do not omit it merely because the ending is sparse."
         )
-    behavior_suffix = (" " + behavior_text) if behavior_text else ""
     texture_style = _connected_texture_style(feature_row, behavior, string_mode)
+    percussive_generic_mode = (
+        texture_style == "generic-sustain"
+        and _is_percussive_generic_context(
+            feature_row,
+            behavior,
+            wav_path=wav_path,
+        )
+    )
+    behavior_suffix = (
+        ""
+        if percussive_generic_mode
+        else (" " + behavior_text) if behavior_text else ""
+    )
     if behavior and behavior.get("piano_pedal_attack_override"):
         return (
             "Rapid onset hint from audio: " + "; ".join(parts) +
@@ -881,6 +967,32 @@ def build_audio_rapid_onset_hint(wav_path: str,
                 "like 후우우 unless the audio clearly sounds airy."
             )
         if texture_style == "generic-sustain":
+            if percussive_generic_mode:
+                return (
+                    "Rapid onset hint from audio: " + "; ".join(parts) +
+                    "." + hidden_text + late_final_text + behavior_suffix +
+                    " Ellipses inside timestamp lists mean additional detected onsets continue "
+                    "between the shown timestamps; do not treat omitted timestamps as silence "
+                    "or leave long gaps while audible strikes continue. "
+                    "Although this input was routed to generic-sustain, the instrument and "
+                    "transient evidence indicates percussion-like behavior. Treat dense onsets "
+                    "as real repeated strikes rather than vibrato or connected melodic motion. "
+                    "Prefer compact percussive Hangul forms such as 둥, 다단, 두둥, 둥둥, "
+                    "다다단, 두다단, 둥다단, 두둥다단, 다단두둥, 타다닥, 창, or 차앙. "
+                    "Prefer short captions for individual strikes. "
+                    "For a locally audible strike or rhythmic group lasting 0.25-0.60s, "
+                    "normally use 2-4 Hangul syllables. "
+                    "Do not lengthen a caption merely because the interval until the next "
+                    "caption is long. Use longer "
+                    "combined forms only when multiple strikes audibly form one connected "
+                    "rhythmic group or when one strike has a clearly long ringing decay. "
+                    "For such audible groups, forms may include 둥다단, 두둥다단, or "
+                    "다다단두둥 rather than flowing melodic forms. Avoid "
+                    "따라라랑, 또로롱, 도로롱, or 띠리링 unless a clearly pitched ringing "
+                    "tone truly dominates the local audio. Choose tokens from actual strike "
+                    "density, accents, rests, and energy changes, and do not place captions "
+                    "at mechanically even intervals."
+                )
             return (
                 "Rapid onset hint from audio: " + "; ".join(parts) +
                 "." + hidden_text + late_final_text + behavior_suffix +
@@ -986,6 +1098,14 @@ def _skeleton_text_with_rapid_hint(row: dict, wav_path: str | None = None) -> st
     if texture_behavior and texture_behavior.get("piano_pedal_attack_override"):
         phrase_mode = False
     texture_style = _connected_texture_style(row, texture_behavior, string_mode)
+    percussive_generic_mode = (
+        texture_style == "generic-sustain"
+        and _is_percussive_generic_context(
+            row,
+            texture_behavior,
+            wav_path=wav_path,
+        )
+    )
     compact_anchor = (
         texture_behavior is not None
         and texture_behavior.get("mode") == "sustained-texture"
@@ -994,15 +1114,16 @@ def _skeleton_text_with_rapid_hint(row: dict, wav_path: str | None = None) -> st
     note_hint = build_rapid_onset_hint(row)
     if note_hint:
         hints.append(note_hint)
-    anchor_hint = build_caption_anchor_hint(
-        row,
-        compact_sustained=compact_anchor,
-        expanded_string_sustained=texture_style == "string-like",
-        expanded_wind_sustained=texture_style == "wind-like",
-        expanded_generic_sustained=texture_style == "generic-sustain",
-    )
-    if anchor_hint:
-        hints.append(anchor_hint)
+    if not percussive_generic_mode:
+        anchor_hint = build_caption_anchor_hint(
+            row,
+            compact_sustained=compact_anchor,
+            expanded_string_sustained=texture_style == "string-like",
+            expanded_wind_sustained=texture_style == "wind-like",
+            expanded_generic_sustained=texture_style == "generic-sustain",
+        )
+        if anchor_hint:
+            hints.append(anchor_hint)
     if wav_path:
         audio_hint = build_audio_rapid_onset_hint(
             wav_path,

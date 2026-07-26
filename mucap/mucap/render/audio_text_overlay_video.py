@@ -19,7 +19,8 @@ def find_source_video(wav_path_or_name: str | Path) -> Path | None:
     if stem.casefold().startswith("newoboe_"):
         original_stem = stem[len("newoboe_"):]
         new_oboe_match = (
-            project_root / "input" / "new_oboe" / f"oboe_{original_stem}.mp4"
+            project_root / "input" / "input_video" / "newoboe"
+            / f"oboe_{original_stem}.mp4"
         )
         if new_oboe_match.is_file():
             return new_oboe_match

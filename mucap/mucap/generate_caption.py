@@ -54,6 +54,7 @@ def select_haptic_preset(wav_path, feature_row):
             _caption_behavior_from_wav,
             _connected_texture_style,
             _is_confident_string_context,
+            _is_percussive_generic_context,
         )
 
         behavior = _caption_behavior_from_wav(str(wav_path), feature_row)
@@ -71,6 +72,15 @@ def select_haptic_preset(wav_path, feature_row):
                 behavior,
                 string_mode,
             )
+            if (
+                texture_style == "generic-sustain"
+                and _is_percussive_generic_context(
+                    feature_row,
+                    behavior,
+                    wav_path=str(wav_path),
+                )
+            ):
+                return "percussive"
             return {
                 "string-like": "melodic",
                 "wind-like": "ambience",
@@ -95,6 +105,34 @@ def is_clear_attack_behavior(wav_path, feature_row) -> bool:
         return bool(behavior and behavior.get("mode") == "clear-attack")
     except Exception as exc:
         print(f"Warning: clear-attack validation mode unavailable: {exc}")
+        return False
+
+
+def is_percussive_generic_behavior(wav_path, feature_row) -> bool:
+    """Identify the percussion-like generic-sustain branch used by the prompt."""
+    if not feature_row:
+        return False
+    try:
+        from mucap.caption_skeleton_patch import (
+            _caption_behavior_from_wav,
+            _connected_texture_style,
+            _is_confident_string_context,
+            _is_percussive_generic_context,
+        )
+
+        behavior = _caption_behavior_from_wav(str(wav_path), feature_row)
+        if not behavior or behavior.get("mode") != "sustained-texture":
+            return False
+        string_mode = bool(_is_confident_string_context(feature_row))
+        if _connected_texture_style(feature_row, behavior, string_mode) != "generic-sustain":
+            return False
+        return _is_percussive_generic_context(
+            feature_row,
+            behavior,
+            wav_path=str(wav_path),
+        )
+    except Exception as exc:
+        print(f"Warning: percussive-generic validation mode unavailable: {exc}")
         return False
 
 
@@ -756,9 +794,11 @@ def onset_rms_validation_error(
     tokens,
     wav_path: str,
     clear_attack_mode: bool,
+    percussive_generic_mode: bool = False,
     caption_onset_tolerance: float = 0.20,
     min_clear_attack_coverage: float = 0.75,
     max_consecutive_missed_gap: float = 0.75,
+    max_percussive_active_gap: float = 1.25,
 ) -> str | None:
     """Cross-check captions against audible onsets and local RMS energy."""
     import numpy as np
@@ -772,14 +812,25 @@ def onset_rms_validation_error(
         )
 
     try:
-        onset_times, onset_strengths, _, _, _, _ = _audio_activity_profile(
+        (
+            onset_times,
+            onset_strengths,
+            rms_times,
+            rms_values,
+            activity_threshold,
+            _,
+        ) = _audio_activity_profile(
             str(Path(wav_path).resolve())
         )
     except Exception as exc:
         print(f"Warning: onset caption validation unavailable: {exc}")
         return None
 
-    if not clear_attack_mode or not onset_times or not onset_strengths:
+    if (
+        not (clear_attack_mode or percussive_generic_mode)
+        or not onset_times
+        or not onset_strengths
+    ):
         return None
 
     strength_threshold = float(np.percentile(onset_strengths, 60))
@@ -800,6 +851,61 @@ def onset_rms_validation_error(
     ]
     coverage = 1.0 - (len(missed) / len(strong_onsets))
     missed_set = set(missed)
+
+    if percussive_generic_mode:
+        consecutive_three_missed = next(
+            (
+                group
+                for group in zip(
+                    strong_onsets,
+                    strong_onsets[1:],
+                    strong_onsets[2:],
+                )
+                if all(onset in missed_set for onset in group)
+            ),
+            None,
+        )
+        if consecutive_three_missed:
+            times = ", ".join(
+                f"{onset:.2f}s" for onset in consecutive_three_missed
+            )
+            return (
+                "percussive-generic captions miss three consecutive strong "
+                f"attacks at {times}; place captions within "
+                f"{caption_onset_tolerance:.2f}s of the audible attacks"
+            )
+
+        duration = audio_duration_seconds(wav_path)
+        boundaries = [0.0] + sorted(caption_times) + [duration]
+        for left, right in zip(boundaries, boundaries[1:]):
+            if right - left < max_percussive_active_gap:
+                continue
+            inner_start = left + caption_onset_tolerance
+            inner_end = right - caption_onset_tolerance
+            strong_inside = [
+                onset for onset in strong_onsets
+                if inner_start <= onset <= inner_end
+            ]
+            if len(strong_inside) < 3:
+                continue
+            interval_rms = [
+                value for timestamp, value in zip(rms_times, rms_values)
+                if inner_start <= timestamp <= inner_end
+            ]
+            active_ratio = (
+                sum(value >= activity_threshold for value in interval_rms)
+                / len(interval_rms)
+                if interval_rms else 0.0
+            )
+            if active_ratio >= 0.35:
+                return (
+                    "percussive-generic captions leave active strikes without "
+                    f"a caption from {left:.2f}s to {right:.2f}s "
+                    f"({right - left:.2f}s gap, {len(strong_inside)} strong "
+                    f"onsets, {active_ratio:.0%} active)"
+                )
+        return None
+
     consecutive_missed = next(
         (
             (left, right)
@@ -832,6 +938,7 @@ def caption_validation_error(
     caption: str,
     wav_path: str,
     clear_attack_mode: bool = False,
+    percussive_generic_mode: bool = False,
 ) -> str | None:
     if "..." in caption or "…" in caption:
         return "ellipsis/omission marker is not allowed"
@@ -870,6 +977,7 @@ def caption_validation_error(
         tokens,
         wav_path,
         clear_attack_mode=clear_attack_mode,
+        percussive_generic_mode=percussive_generic_mode,
     )
     if onset_rms_error:
         return onset_rms_error
@@ -933,6 +1041,7 @@ def generate_valid_caption(
     wav_path: str,
     max_attempts: int = 3,
     clear_attack_mode: bool | None = None,
+    percussive_generic_mode: bool = False,
 ) -> str:
     caption = ""
     if clear_attack_mode is None:
@@ -949,6 +1058,7 @@ def generate_valid_caption(
             caption,
             wav_path,
             clear_attack_mode=clear_attack_mode,
+            percussive_generic_mode=percussive_generic_mode,
         )
         if reason is None:
             return caption
@@ -1060,11 +1170,16 @@ def annotate_and_show(wav_path, use_design_prompt=True,
     # print("🔍 Prompt preview:\n", text_only[:500], "...")  # Preview only the beginning
 
     clear_attack_mode = is_clear_attack_behavior(wav_path, music_features)
+    percussive_generic_mode = is_percussive_generic_behavior(
+        wav_path,
+        music_features,
+    )
     caption = generate_valid_caption(
         model,
         messages,
         wav_path,
         clear_attack_mode=clear_attack_mode,
+        percussive_generic_mode=percussive_generic_mode,
     )
 
     messages[0]["content"] = [c for c in messages[0]["content"]

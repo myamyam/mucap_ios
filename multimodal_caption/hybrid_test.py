@@ -98,6 +98,7 @@ PRESETS: dict[str, Preset] = {
 
     # Environmental / noise-like (rain/wind/ambience): often has plenty of low already.
     # Suppress remap more aggressively to avoid "artificial buzz".
+    #wind-like
     "ambience": Preset(
         low_cut=350.0,
         ncar=8,
@@ -110,6 +111,7 @@ PRESETS: dict[str, Preset] = {
 
     # Melodic / high-frequency instruments (violin, flute, vocal presence):
     # Stronger remap so violin/flute haptic is more perceptible.
+    #string-like
     "melodic": Preset(
         low_cut=200.0,
         ncar=14,
@@ -122,6 +124,7 @@ PRESETS: dict[str, Preset] = {
     ),
 
     # Percussive / transient: favor clearer modulation and less carrier spread.
+    #clear-attack
     "percussive": Preset(
         low_cut=200.0,
         ncar=10,
