@@ -25,12 +25,16 @@ new_data_download*.log
 # MuCap local environments and generated data
 mucap/.venv/
 mucap/.venv310/
+mucap/.venv311/
+mucap/.matplotlib/
 mucap/.env
 mucap/logs/
 mucap/input/
 mucap/output/
+mucap/output_*/
 mucap/outpu2/
 mucap/output_rag_smoke_test/
+mucap/can_use*/
 mucap/dataset/
 mucap/pretrained_models/
 mucap/human_annotation/
@@ -40,3 +44,14 @@ mucap/mucap/*_2.py
 mucap/mucap/rag/ragdb/
 mucap/mucap/rag/ragdb_skeleton/
 mucap/mucap/rag/ragdb_skeleton_wrong/
+mucap/mucap/rag/_chroma_smoke_test/
+mucap/mucap/rag/ragdb_skeleton_break/
+mucap/mucap/rag/ragdb_skeleton_old/
+
+# Local generated artifacts and process state
+frames_*/
+multimodal_caption/__MACOSX/
+*.log
+*.pid
+*.start
+*.path
