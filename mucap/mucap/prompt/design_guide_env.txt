@@ -1,0 +1,57 @@
+- Summary of contents –
+Environmental sound adaptation
+1. Consonant repetition + sound event separation
+: "똑 똑," "딸깍 딸깍," "타다닥" → separate clearly audible events and use consonant repetition for rapid successive attacks
+- Follow the actual event timing, including irregular gaps; do not impose a musical beat or regular pattern.
+
+2. Express audible pitch and sustain with vowel choices and length
+: "삑" (short tonal beep), "삐이" (sustained high tone), "우웅" (low sustained hum)
+- Use pitch-based distinctions only when a tone is audible. For broadband noise, prioritize texture and continuity rather than inventing a definite pitch.
+- Extend syllables only when the sound actually continues; do not turn a short event into a sustained sound.
+
+3. Represent overlapping sounds and changes in prominence
+: a continuous "쏴아" with a distinct "툭" → retain the background texture where audible and place the separate impact at its actual onset
+- Select clearly audible layers without inventing an order between simultaneous events.
+- When the caption format cannot represent every layer, prioritize the most prominent event or meaningful change; avoid filling every moment with text.
+
+4. Familiar environmental sound syllables are reference patterns
+: "똑똑" (light discrete taps), "철벅" (wet impact), "바스락" (dry rustling), "덜덜" (rattling), "윙" (tonal buzzing)
+- Choose patterns by the audible sound, not by an assumed source name. The same source can produce different textures, and different sources can sound alike.
+- Use impact sounds, electronic beeps, or animal calls when actually audible; do not convert environmental sounds into drum or instrument patterns.
+
+5. Reflect the transient-resonance concept in structure
+: "탁" is a short sharp attack, "쿵" is a low resonant impact, "쨍" is a bright ringing impact
+- Distinguish the initial attack from its audible decay. A dry click should stay short; a ringing or reverberant event may use a longer form such as "우웅."
+- Do not represent the decay of one event as repeated new impacts.
+
+6. Strategy for turning environmental sound events into text
+- Break by audible onsets, pauses, or changes in texture
+: isolated drops → separate "똑" units at the heard times; a rapid burst of small impacts → "토도독"
+- Group connected sounds into meaningful event units
+: a brief rustling event → "바스락"; a continuous wash of noise → "쏴아"
+- Preserve irregular repetition, acceleration, slowing, and silence. Do not divide events by note values, beats, or an assumed tempo.
+- Do not repeatedly caption an unchanged continuous sound as if it had new attacks.
+
+7. Timbre segmentation elements
+- Transient → consonants for clicks, impacts, and abrupt starts: ㄱ, ㄷ, ㅂ, ㅌ, ㅋ, ㄲ, ㄸ, etc.
+- Resonance → vowels/final consonants for hum, ringing, and decay: 우, 으, 웅, 응, ㅇ, ㅁ, etc.
+- Noise texture → sustained or repeated friction-like syllables: "쉬이," "쏴아," "사각," "지지직," etc.
+: "쿵" combines an impact and low resonance; "지지직" suggests irregular crackling rather than a stable pitched tone.
+- These are flexible sound-mimetic choices, not fixed mappings from letters to acoustic measurements.
+
+8. How to indicate intensity and event emphasis
+- Use stronger consonants or fuller syllables when the audible attack becomes stronger
+: "톡" versus "탁," "쿵" versus "쾅" → possible distinctions in attack and perceived force, depending on the recording
+- Use repetition only for audible repeated events; a louder single impact is not several impacts.
+- Reflect approaching, receding, or fading sounds only when the change is audible. Do not invent spatial movement or treat syllable length as loudness alone.
+
+9. Role of 'ㄹ' – rolling, rattling, and connected irregular motion
+- 'ㄹ' can help express rolling impacts, loose mechanical vibration, or short sequences of connected surface contacts.
+: "데구르르," "드르륵," "덜그럭," "부르릉"
+- Match the actual continuity and roughness of the sound; do not insert 'ㄹ' merely to add musical phrasing or groove.
+
+10. Role of 'ㅎ' – soft attack and airy expression
+- 'ㅎ' can suggest airflow, a soft onset, or a breathy transition.
+: "후우," "휘이," "휙" → sustained airflow, tonal wind-like noise, or a brief rush of air, when supported by the audio
+- For stronger hissing or friction, forms such as "쉬이" or "쏴아" may fit better. Do not assume that every airy sound is high-pitched.
+- All examples illustrate sound choices only. Follow the caller's timestamp and output format; emit Hangul onomatopoeia without source labels, explanations, quotation marks, or decorative separators.

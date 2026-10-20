@@ -1,0 +1,18 @@
+# Standalone mobile adapter; avoids machine-local paths in mucap/requirements.txt.
+# Python 3.11. Essentia is optional; existing librosa fallback is used without it.
+numpy
+scipy
+pandas
+librosa
+matplotlib
+tensorflow
+python-dotenv
+openai
+langchain-openai
+langchain-chroma
+pydub
+imageio
+imageio-ffmpeg
+pillow
+tqdm
+soundfile

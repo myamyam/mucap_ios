@@ -748,55 +748,50 @@ def _caption_end_time(index: int, captions: list[dict], full_duration: float) ->
     return max(end, start + 0.05)
 
 
-def _timeline_token_html(
-    token: str,
-    row: pd.Series,
-    timestamp: float,
-    end_time: float,
-    df: pd.DataFrame,
-    visual_mode: str,
-) -> str:
-    chars = list(token)
-    n = len(chars)
-    spans = []
+# [모바일 연동 변경] 기존 _timeline_token_html의 스타일 계산을 분리했습니다.
+# 원본 HTML과 Flutter가 색상·크기·위치·투명도 계산을 공유하기 위한 함수입니다.
+def timeline_token_style(token, row, timestamp, end_time, df, visual_mode):
+    """Shared HTML/mobile visual data. Keep the original HTML rounding rules."""
     token_offset_y = _pitch_offset_px(row, df)
     base_norm = _pitch_norm(row, df)
-    for j, ch in enumerate(chars):
-        if n:
-            char_time = timestamp + ((j + 0.5) / n) * max(end_time - timestamp, 0.05)
-        else:
-            char_time = timestamp
+    characters = []
+    for j, ch in enumerate(token):
+        char_time = timestamp + ((j + 0.5) / len(token)) * max(end_time - timestamp, 0.05)
         char_row = _row_at_time(char_time, df)
         if char_row is None:
             char_row = row
-        if n > 2 and SUSTAIN_DECAY_FLOOR < 1.0:
-            fade = 1.0 - (j / (n - 1)) * (1.0 - SUSTAIN_DECAY_FLOOR)
-        else:
-            fade = 1.0
-        _ = fade
-        raw_offset_y = _pitch_offset_px(char_row, df)
-        offset_y = float(
-            np.clip(
-                raw_offset_y - token_offset_y,
-                -INTERNAL_PITCH_OFFSET_PX,
-                INTERNAL_PITCH_OFFSET_PX,
-            )
-        )
-        opacity = _opacity_style(char_row, df, base_norm)
-        spans.append(
-            f'<span class="caption-char" style="'
-            f'opacity: {opacity:.2f}; '
-            f'color: {_color_style(char_row, df, visual_mode, base_norm)}; '
-            f'transform: translateY({offset_y:.1f}px);">'
-            f"{html.escape(ch)}</span>"
-        )
-    style = (
-        f"color: {_color_style(row, df, visual_mode)};"
-        f" font-size: {row['size_px'] * CAPTION_FONT_SCALE:.1f}px;"
-    )
+        # [기존 코드 보존] fade는 계산 후 출력에 사용되지 않았으므로 주석으로 남깁니다.
+        # n = len(token)
+        # if n > 2 and SUSTAIN_DECAY_FLOOR < 1.0:
+        #     fade = 1.0 - (j / (n - 1)) * (1.0 - SUSTAIN_DECAY_FLOOR)
+        # else:
+        #     fade = 1.0
+        # _ = fade
+        offset = float(np.clip(_pitch_offset_px(char_row, df) - token_offset_y,
+                               -INTERNAL_PITCH_OFFSET_PX, INTERNAL_PITCH_OFFSET_PX))
+        characters.append(dict(text=ch,
+            color=_color_style(char_row, df, visual_mode, base_norm),
+            opacity=round(_opacity_style(char_row, df, base_norm), 2),
+            offset_y=round(offset, 1)))
+    return dict(color=_color_style(row, df, visual_mode),
+                font_size=round(float(row['size_px']) * CAPTION_FONT_SCALE, 1),
+                offset_y=round(token_offset_y, 1), characters=characters)
+
+
+# [모바일 연동 변경] 직접 계산하던 스타일을 timeline_token_style에서 받아 HTML을 만듭니다.
+# 기존 HTML의 스타일 값과 소수점 표시 자릿수를 유지합니다.
+def _timeline_token_html(token, row, timestamp, end_time, df, visual_mode) -> str:
+    style = timeline_token_style(token, row, timestamp, end_time, df, visual_mode)
+    spans = [
+        f'<span class="caption-char" style="opacity: {char["opacity"]:.2f}; '
+        f'color: {char["color"]}; transform: translateY({char["offset_y"]:.1f}px);">'
+        f'{html.escape(char["text"])}</span>'
+        for char in style['characters']
+    ]
     return (
         f'<span class="caption-token" data-time="{timestamp:.4f}" '
-        f'style="--token-y: {token_offset_y:.1f}px; {style}">'
+        f'style="--token-y: {style["offset_y"]:.1f}px; color: {style["color"]}; '
+        f'font-size: {style["font_size"]:.1f}px;">'
         f'<span class="caption-pop">{"".join(spans)}</span></span>'
     )
 
