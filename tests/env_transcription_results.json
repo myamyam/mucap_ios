@@ -1,0 +1,66 @@
+[
+  {
+    "file": "kung.wav",
+    "result": {
+      "version": 1,
+      "mode": "transcription",
+      "duration": 2.56,
+      "model": "gpt-audio-1.5",
+      "captions": [
+        {
+          "time": 0.7,
+          "end": 1.3,
+          "text": "지이잉"
+        },
+        {
+          "time": 1.3,
+          "end": 2.56,
+          "text": "따라라라라"
+        }
+      ]
+    },
+    "status": "ok",
+    "elapsed_seconds": 16.05
+  },
+  {
+    "file": "ttock.wav",
+    "result": {
+      "version": 1,
+      "mode": "transcription",
+      "duration": 2.986666666666667,
+      "model": "gpt-audio-1.5",
+      "captions": [
+        {
+          "time": 0.0,
+          "end": 1.4,
+          "text": "띡"
+        },
+        {
+          "time": 1.4,
+          "end": 2.986666666666667,
+          "text": "띡"
+        }
+      ]
+    },
+    "status": "ok",
+    "elapsed_seconds": 5.04
+  },
+  {
+    "file": "2_ (1).mp3",
+    "result": {
+      "version": 1,
+      "mode": "transcription",
+      "duration": 1.906938775510204,
+      "model": "gpt-audio-1.5",
+      "captions": [
+        {
+          "time": 0.0,
+          "end": 1.906938775510204,
+          "text": "삑"
+        }
+      ]
+    },
+    "status": "ok",
+    "elapsed_seconds": 3.47
+  }
+]

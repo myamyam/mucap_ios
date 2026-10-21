@@ -155,7 +155,7 @@ def analyze(data: bytes, *, transcription_only=False) -> dict:
         features = caption.AudioFeatureExtraction().extract_features(str(wav))
         features["envelop"] = features.get("envelope")
         
-        guide = (ROOT / "mucap/mucap/prompt/design_guide.txt").read_text(encoding="utf-8")
+        guide = (ROOT / "mucap/mucap/prompt/design_guide_env.txt").read_text(encoding="utf-8")
         
         messages = caption.build_prompt_rhythm(
             caption.encode_audio(caption.wav_to_mp3(str(wav))), guide, features,

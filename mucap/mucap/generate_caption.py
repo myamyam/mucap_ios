@@ -430,7 +430,7 @@ def retrieve_rag_context_embedding_cache(query_text: str, persist_directory: str
 
 def interpret_music_features(music_features):
     if not music_features:
-        return "3) [Context]: - No music features available; rely only on the audio."
+        return "3) [Context]: - No audio features available; rely only on the audio."
 
     # Convert strings to numbers
     def safe_float(value, default=0.0):
@@ -488,7 +488,7 @@ def interpret_music_features(music_features):
 
     return (
         f"3) [Context]:\n"
-        f"- Instruments used: {instruments_str}\n"
+        f"- Instrument classifier guesses (may not apply to environmental sounds): {instruments_str}\n"
         f"- Interpreted audio traits: {volume_desc}, {pitch_desc}, {attack_desc}, {resonance_desc}\n"
         f"- Raw values: volume: {volume:.2f}, pitch: {pitch:.2f}, "
         f"attack: {attack_text or attack_raw}, envelope: {envelope_text}, "
@@ -504,7 +504,7 @@ def build_prompt_rhythm(audio_b64: str, design_prompt=None, music_features=None,
     if music_features is not None:
         feature_str = interpret_music_features(music_features)
     else:
-        feature_str = "3) [Context]: - No music features available; rely only on the audio."
+        feature_str = "3) [Context]: - No audio features available; rely only on the audio."
 
     if wav_path:
         feature_str = augment_feature_str(
@@ -520,17 +520,17 @@ def build_prompt_rhythm(audio_b64: str, design_prompt=None, music_features=None,
         if rag_context is not None:
             feature_str += (
                 "\n4) [Onomatopoeia annotations of similar audio] "
-                "(use only as reference and adapt to the provided music): "
-                "The instruments and annotations in these retrieved examples belong "
+                "(use only as reference and adapt to the provided environmental audio): "
+                "The sound sources and annotations in these retrieved examples belong "
                 "to reference clips, not necessarily to the current audio. Do not "
-                "treat retrieved instrument names as the instrument identity or style "
+                "treat retrieved source names as the sound source identity or style "
                 "mode of the current audio; use the current audio analysis above for "
                 "style decisions. "
                 f"{rag_context}\n"
             )
 
     text = (
-        "You are an audio subtitle writer. Listen to the audio and create sound-mimetic "
+        "You are an environmental audio subtitle writer. Listen to the audio and create sound-mimetic "
         "captions using Hangul Korean onomatopoeia only.\n"
         f"Audio duration: {duration:.2f} seconds. End timestamps must be between "
         f"0.00 and {end_timestamp:.2f} seconds.\n"
@@ -543,22 +543,26 @@ def build_prompt_rhythm(audio_b64: str, design_prompt=None, music_features=None,
         "only and are not sound-word vocabulary examples.\n"
         "- Separate caption units with spaces and keep every timestamp immediately "
         "before its Hangul caption token.\n"
-        "- Use only Hangul Korean onomatopoeia for musical instrument sounds.\n"
-        "- Choose instrumental syllables from the audible pitch, register, duration, "
-        "loudness, attack, resonance, articulation, and rests. Do not use human cries, "
-        "speech-like exclamations, impact-only effects, or electronic beeps unless they "
-        "are genuinely produced as part of the instrument sound.\n"
+        "- Use only Hangul Korean onomatopoeia for audible environmental sounds.\n"
+        "- Choose sound-mimetic syllables from audible texture, duration, loudness, "
+        "attack, resonance, continuity, and pauses; use pitch only when a tone is audible. "
+        "Represent impacts, friction, water, wind, mechanical sounds, electronic beeps, "
+        "animal calls, and nonverbal human sounds only when actually heard. Do not "
+        "transcribe speech, name sound sources, or invent sounds from an assumed scene.\n"
+        "- Treat extracted features and source classifications as fallible hints. "
+        "Do not force instrument identities, musical beats, or definite pitch onto "
+        "environmental noise; prioritize the audio when context hints conflict.\n"
         "- Do not write explanations, greetings, markdown, English words, romanized Korean, "
         "Japanese, Chinese characters, Hanja, adjectives, or extra symbols.\n"
         "- Do not say you will analyze the audio. Directly output the timestamped caption line.\n"
-        "- Use as many units as needed to match audible rhythm and sound events.\n"
+        "- Use as many units as needed to match audible event timing, irregular repetition, and pauses.\n"
         "- If the context includes a Rapid onset hint, follow it with repeated close-timestamp Hangul units for clearly separated attacks.\n"
-        "- Repetition is allowed only when the notes are genuinely uniform. Do not let "
-        "one-syllable tokens dominate a passage whose notes have audible sustain or "
-        "resonance. When pitch, register, duration, loudness, attack, resonance, "
-        "articulation, or rests change, reflect those changes in the consonant, vowel, "
+        "- Repetition is allowed only when separate sound events are genuinely uniform. Do not let "
+        "one-syllable tokens dominate sounds that have audible sustain or "
+        "resonance. When texture, audible pitch, duration, loudness, attack, resonance, "
+        "continuity, or pauses change, reflect those changes in the consonant, vowel, "
         "and token length instead of repeating one token or alternating a fixed pair. "
-        "Do not add variety unsupported by the audio.\n"
+        "Do not add variety unsupported by the audio or split an unchanged continuous sound into invented attacks.\n"
         "- If unsure, still output a short valid caption line with timestamps.\n"
         f"Optional style guide: {design_prompt or 'No guide'}"
         # "6) [Reference rules]\n"
@@ -991,9 +995,9 @@ def append_caption_retry_instruction(messages, reason: str, wav_path: str) -> No
         f"{reason}. Regenerate from scratch. Do not summarize or use ellipses. "
         "Every timestamp must be enclosed in square brackets, exactly like "
         "[0.00] 가 [0.45] 나. Use only Hangul syllables inside caption tokens. "
-        "Keep the caption natural and follow the audible rhythm from beginning to end. "
+        "Keep the caption natural and follow the audible event timing from beginning to end. "
         "Do not leave a multi-second timestamp gap when audible attacks and active "
-        "instrument sound continue inside that interval; add captions near the "
+        "environmental sound continue inside that interval; add captions near the "
         "meaningful audible changes. Long gaps are allowed only for genuine silence "
         "or one genuinely unchanged sustained sound."
     )
