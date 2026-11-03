@@ -6,7 +6,6 @@ python -m multimodal_caption.mobile_pipeline --port 8765
 from __future__ import annotations
 
 import argparse
-import array
 import base64
 import binascii
 import io
@@ -56,43 +55,43 @@ def validate_wav(data: bytes) -> float:
         raise ValueError("Invalid PCM WAV") from exc
 
 
-def wav_haptic_events(path: Path) -> list[dict]:
-    """Approximate the rendered WAV envelope, not its carrier frequencies.
+# def wav_haptic_events(path: Path) -> list[dict]:
+#     """Approximate the rendered WAV envelope, not its carrier frequencies.
 
-    80ms bins yield at most 188 continuous events for a 15-second clip.
-    Silent bins stay silent. Sharpness follows local envelope rise.
-    """
-    data = path.read_bytes()
-    validate_wav(data)
+#     80ms bins yield at most 188 continuous events for a 15-second clip.
+#     Silent bins stay silent. Sharpness follows local envelope rise.
+#     """
+#     data = path.read_bytes()
+#     validate_wav(data)
     
-    with wave.open(io.BytesIO(data), "rb") as wav:
-        rate, channels = wav.getframerate(), wav.getnchannels()
-        samples = array.array("h", wav.readframes(wav.getnframes()))
+#     with wave.open(io.BytesIO(data), "rb") as wav:
+#         rate, channels = wav.getframerate(), wav.getnchannels()
+#         samples = array.array("h", wav.readframes(wav.getnframes()))
     
-    if sys.byteorder != "little":
-        samples.byteswap()
+#     if sys.byteorder != "little":
+#         samples.byteswap()
     
-    step = max(1, round(rate * .08)) * channels
-    levels = []
+#     step = max(1, round(rate * .08)) * channels
+#     levels = []
     
-    for start in range(0, len(samples), step):
-        chunk = samples[start:start + step]
-        rms = math.sqrt(sum((v / 32768) ** 2 for v in chunk) / len(chunk))
-        levels.append((start / channels / rate, len(chunk) / channels / rate, rms))
+#     for start in range(0, len(samples), step):
+#         chunk = samples[start:start + step]
+#         rms = math.sqrt(sum((v / 32768) ** 2 for v in chunk) / len(chunk))
+#         levels.append((start / channels / rate, len(chunk) / channels / rate, rms))
     
-    peak = max((v for _, _, v in levels), default=0)
-    events = []
-    previous = 0.0
+#     peak = max((v for _, _, v in levels), default=0)
+#     events = []
+#     previous = 0.0
     
-    for time, duration, rms in levels:
-        if rms > max(1e-5, peak * .04):
-            intensity = min(1.0, rms / max(.08, peak))
-            events.append(dict(time=time, duration=min(duration, 15-time),
-                               intensity=intensity,
-                               sharpness=min(1.0, .2 + max(0, rms-previous) / max(.08, peak))))
-        previous = rms
+#     for time, duration, rms in levels:
+#         if rms > max(1e-5, peak * .04):
+#             intensity = min(1.0, rms / max(.08, peak))
+#             events.append(dict(time=time, duration=min(duration, 15-time),
+#                                intensity=intensity,
+#                                sharpness=min(1.0, .2 + max(0, rms-previous) / max(.08, peak))))
+#         previous = rms
     
-    return events
+#     return events
 
 
 def caption_timeline(tokens, duration):
@@ -105,9 +104,10 @@ def caption_timeline(tokens, duration):
         for i, (t, text) in enumerate(tokens)]
 
 
-def build_outputs(caption, wav, directory, features, timeline):
+def build_outputs(wav, directory, features, timeline):
     """Optional presentation stage, skipped entirely by /transcribe."""
     from mucap.render import audio_text_viz as visual
+    from .wav_to_ahap import convert_wav
     
     table = visual.note_table(visual.parse_notes(features.get("notes", [])))
     if not table.empty:
@@ -116,7 +116,7 @@ def build_outputs(caption, wav, directory, features, timeline):
     mode = visual._visual_mode_from_context(str(wav), features)
     song_style = visual.song_style(features)
     styled = []
-   
+    
     for cue in timeline:
         row = visual._row_at_time(cue["time"], table) if not table.empty else None
         if row is not None:
@@ -135,11 +135,15 @@ def build_outputs(caption, wav, directory, features, timeline):
                            size=float(row["size_px"]) if row is not None else 26.0,
                            visual=style))
     
-    haptic = caption.generate_haptic_output(str(wav), directory, features)
-    return styled, wav_haptic_events(haptic)
+    ahap_path, _ =convert_wav(wav, Path(directory) / "recording.ahap")
+    ahap=json.loads(ahap_path.read_text(encoding="utf-8"))
+    # haptic = caption.generate_haptic_output(str(wav), directory, features)
+    return styled, ahap
 
 
 def analyze(data: bytes, *, transcription_only=False) -> dict:
+    from mucap import generate_caption as caption
+    
     configure_environment()
     started = clock_time.monotonic()
     duration = validate_wav(data)
@@ -147,7 +151,6 @@ def analyze(data: bytes, *, transcription_only=False) -> dict:
     # The nested MuCap checkout is the import root used by its original CLI.
     if str(ROOT / "mucap") not in sys.path:
         sys.path.insert(0, str(ROOT / "mucap"))
-    from mucap import generate_caption as caption
 
     with tempfile.TemporaryDirectory(prefix="mucap-mobile-") as directory:
         wav = Path(directory) / "recording.wav"
@@ -178,8 +181,8 @@ def analyze(data: bytes, *, transcription_only=False) -> dict:
                       captions=timeline)
         
         if not transcription_only:
-            styled, events = build_outputs(caption, wav, directory, features, timeline)
-            result.update(mode="multimodal", captions=styled, events=events)
+            styled, ahap = build_outputs(wav, directory, features, timeline)
+            result.update(mode="multimodal", captions=styled, ahap=ahap)
         
         print(f"Analysis completed in {clock_time.monotonic()-started:.2f}s", flush=True)
         return result
@@ -240,10 +243,10 @@ def enrich(parsed) -> dict:
         wav = Path(directory) / "recording.wav"
         wav.write_bytes(audio)
         features = caption.AudioFeatureExtraction().extract_features(str(wav))
-        styled, events = build_outputs(caption, wav, directory, features, timeline)
+        styled, ahap = build_outputs(wav, directory, features, timeline)
         
         return dict(version=1, mode="multimodal", duration=duration, model=model,
-                    captions=styled, events=events)
+                    captions=styled, ahap=ahap)
 
 
 class Handler(BaseHTTPRequestHandler):

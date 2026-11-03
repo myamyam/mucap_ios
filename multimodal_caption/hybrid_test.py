@@ -212,10 +212,11 @@ def hard_limiter(x: np.ndarray, peak: float) -> np.ndarray:
 # Core processing
 # -------------------------
 
-def render_hybrid(y_raw: np.ndarray, sr: int, p: Preset, strength: float, gain_low: float, gain_remap: float) -> tuple[np.ndarray, dict]:
+def render_hybrid(y_raw: np.ndarray, sr: int, p: Preset, strength: float, gain_low: float, gain_remap: float, *, features: dict | None = None) -> tuple[np.ndarray, dict]:
     """
     Returns (out, info).
     - strength scales only the remap target ratio (auto policy), not the low passthrough.
+    - features optionally receives intermediate arrays for AHAP export.
     """
     info = {}
 
@@ -349,6 +350,20 @@ def render_hybrid(y_raw: np.ndarray, sr: int, p: Preset, strength: float, gain_l
     # Limiter
     out = hard_limiter(out, peak=float(p.out_peak)).astype(np.float32)
     info["peak_out"] = float(np.max(np.abs(out))) if len(out) else 0.0
+
+    if features is not None:
+        features.update(
+            A=A,
+            frame_times=np.arange(A.shape[1], dtype=np.float32) * (p.hop / sr),
+            low=low,
+            rem=rem,
+            #추가사항
+            source_audio=y_raw,
+            highpassed_audio=y_hi_an,
+            sample_rate=sr,
+            hop_length=p.hop,
+            auto_ratio=info.get("auto_ratio", 1.0),
+        )
 
     return out, info
 

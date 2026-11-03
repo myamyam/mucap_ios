@@ -1,0 +1,42 @@
+[
+  {
+    "file": "kung",
+    "preset": "ambience",
+    "duration": 2.56,
+    "structure_checks": "passed",
+    "parameters": {
+      "HapticIntensityControl": {
+        "curves": 18,
+        "points": 257,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "HapticSharpnessControl": {
+        "curves": 18,
+        "points": 257,
+        "min": 0.0,
+        "max": 0.19920015167685415
+      }
+    }
+  },
+  {
+    "file": "ttock",
+    "preset": "ambience",
+    "duration": 2.986666666666667,
+    "structure_checks": "passed",
+    "parameters": {
+      "HapticIntensityControl": {
+        "curves": 20,
+        "points": 300,
+        "min": 0.0,
+        "max": 0.35162432547047806
+      },
+      "HapticSharpnessControl": {
+        "curves": 20,
+        "points": 300,
+        "min": 0.0,
+        "max": 0.12104309624141114
+      }
+    }
+  }
+]
