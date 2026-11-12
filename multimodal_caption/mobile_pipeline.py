@@ -107,7 +107,7 @@ def caption_timeline(tokens, duration):
 def build_outputs(wav, directory, features, timeline):
     """Optional presentation stage, skipped entirely by /transcribe."""
     from mucap.render import audio_text_viz as visual
-    from .wav_to_ahap import convert_wav
+    from .ahap_test import convert_wav
     
     table = visual.note_table(visual.parse_notes(features.get("notes", [])))
     if not table.empty:
@@ -135,15 +135,15 @@ def build_outputs(wav, directory, features, timeline):
                            size=float(row["size_px"]) if row is not None else 26.0,
                            visual=style))
     
-    ahap_path, _ =convert_wav(wav, Path(directory) / "recording.ahap")
+    # Phone recordings can be quiet; use the previous mobile RMS floor as reference.
+    ahap_path, _ = convert_wav(
+        wav, Path(directory) / "recording.ahap", reference_rms=0.08)
     ahap=json.loads(ahap_path.read_text(encoding="utf-8"))
     # haptic = caption.generate_haptic_output(str(wav), directory, features)
     return styled, ahap
 
 
 def analyze(data: bytes, *, transcription_only=False) -> dict:
-    from mucap import generate_caption as caption
-    
     configure_environment()
     started = clock_time.monotonic()
     duration = validate_wav(data)
@@ -151,6 +151,8 @@ def analyze(data: bytes, *, transcription_only=False) -> dict:
     # The nested MuCap checkout is the import root used by its original CLI.
     if str(ROOT / "mucap") not in sys.path:
         sys.path.insert(0, str(ROOT / "mucap"))
+
+    from mucap import generate_caption as caption
 
     with tempfile.TemporaryDirectory(prefix="mucap-mobile-") as directory:
         wav = Path(directory) / "recording.wav"

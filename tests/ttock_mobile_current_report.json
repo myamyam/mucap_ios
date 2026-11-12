@@ -1,0 +1,200 @@
+{
+  "input": "tests/ttock.wav",
+  "output": "tests/ttock_mobile_current.ahap",
+  "settings": {
+    "reference_rms": 0.08,
+    "preset": "ambience",
+    "control_hz": 100
+  },
+  "metrics": {
+    "low_strength": 0.6381431309721195,
+    "auto_ratio": 0.05,
+    "base_rms": 0.011630578897893429,
+    "rms_in": 0.01822565868496895,
+    "rms_low": 0.011630578897893429,
+    "rms_rem_before": 0.0769546777009964,
+    "rms_rem_after": 0.0005815298645757139,
+    "rms_out": 0.01822565868496895,
+    "peak_out": 0.22637733817100525,
+    "duration": 2.986666666666667,
+    "control_points": 300,
+    "continuous_events": 2,
+    "transient_events": 23,
+    "peak_intensity": 1.0,
+    "curve_tolerance": 0.01
+  },
+  "continuous_regions": [
+    {
+      "start": 0.05,
+      "duration": 0.75
+    },
+    {
+      "start": 0.96,
+      "duration": 2.02
+    }
+  ],
+  "transients": [
+    {
+      "time": 0.005333333333333333,
+      "event_intensity": 0.16000000000000003,
+      "curve_multiplier": 0.0,
+      "estimated_effective_intensity": 0.0,
+      "sharpness": 0.8
+    },
+    {
+      "time": 0.16,
+      "event_intensity": 0.16000000000000003,
+      "curve_multiplier": 0.04499419647040509,
+      "estimated_effective_intensity": 0.007199071435264816,
+      "sharpness": 0.8
+    },
+    {
+      "time": 0.29333333333333333,
+      "event_intensity": 0.1322585391998291,
+      "curve_multiplier": 0.04645932818110769,
+      "estimated_effective_intensity": 0.006144642877438757,
+      "sharpness": 0.7046387284994126
+    },
+    {
+      "time": 0.4266666666666667,
+      "event_intensity": 0.16000000000000003,
+      "curve_multiplier": 0.04332390820397666,
+      "estimated_effective_intensity": 0.0069318253126362675,
+      "sharpness": 0.8
+    },
+    {
+      "time": 0.5333333333333333,
+      "event_intensity": 0.11530519485473634,
+      "curve_multiplier": 0.0499814252674069,
+      "estimated_effective_intensity": 0.0057631179795757945,
+      "sharpness": 0.6463616073131562
+    },
+    {
+      "time": 0.7146666666666667,
+      "event_intensity": 0.14764160156250003,
+      "curve_multiplier": 0.05176057450158799,
+      "estimated_effective_intensity": 0.007642014117209553,
+      "sharpness": 0.7575180053710938
+    },
+    {
+      "time": 0.8693333333333333,
+      "event_intensity": 0.13356078147888184,
+      "curve_multiplier": 0.0,
+      "estimated_effective_intensity": 0.0,
+      "sharpness": 0.7091151863336563
+    },
+    {
+      "time": 1.0026666666666666,
+      "event_intensity": 0.2902923836299977,
+      "curve_multiplier": 0.17878136862743346,
+      "estimated_effective_intensity": 0.05189886964749095,
+      "sharpness": 0.8349541833540853
+    },
+    {
+      "time": 1.184,
+      "event_intensity": 0.11475948333740237,
+      "curve_multiplier": 0.197191492105574,
+      "estimated_effective_intensity": 0.02262959375256713,
+      "sharpness": 0.6569073897704151
+    },
+    {
+      "time": 1.2906666666666666,
+      "event_intensity": 0.6351540874212631,
+      "curve_multiplier": 0.329012913681046,
+      "estimated_effective_intensity": 0.2089738969388956,
+      "sharpness": 0.8293698997169464
+    },
+    {
+      "time": 1.4506666666666668,
+      "event_intensity": 0.12064742088317873,
+      "curve_multiplier": 0.1671487815254701,
+      "estimated_effective_intensity": 0.02016606939481388,
+      "sharpness": 0.6743545269978917
+    },
+    {
+      "time": 1.5626666666666666,
+      "event_intensity": 0.2637341072654962,
+      "curve_multiplier": 0.17733436643974787,
+      "estimated_effective_intensity": 0.04676912082047927,
+      "sharpness": 0.8334043886334791
+    },
+    {
+      "time": 1.7013333333333334,
+      "event_intensity": 0.09734239578247071,
+      "curve_multiplier": 0.12465415722636469,
+      "estimated_effective_intensity": 0.012134134308659124,
+      "sharpness": 0.6013394079024272
+    },
+    {
+      "time": 1.84,
+      "event_intensity": 0.15291564941406252,
+      "curve_multiplier": 0.08556110390269375,
+      "estimated_effective_intensity": 0.013083631767864494,
+      "sharpness": 0.7756475448608399
+    },
+    {
+      "time": 1.952,
+      "event_intensity": 0.14742695808410647,
+      "curve_multiplier": 0.07620097947981264,
+      "estimated_effective_intensity": 0.011234078607738195,
+      "sharpness": 0.756780168414116
+    },
+    {
+      "time": 2.1386666666666665,
+      "event_intensity": 0.15404109954833986,
+      "curve_multiplier": 0.047276619454205124,
+      "estimated_effective_intensity": 0.007282542443654193,
+      "sharpness": 0.7795162796974182
+    },
+    {
+      "time": 2.2453333333333334,
+      "event_intensity": 0.15406070709228517,
+      "curve_multiplier": 0.06373533150528145,
+      "estimated_effective_intensity": 0.00981911023846486,
+      "sharpness": 0.7795836806297303
+    },
+    {
+      "time": 2.3466666666666667,
+      "event_intensity": 0.14650272369384768,
+      "curve_multiplier": 0.0536814176704285,
+      "estimated_effective_intensity": 0.00786447390046482,
+      "sharpness": 0.7536031126976014
+    },
+    {
+      "time": 2.453333333333333,
+      "event_intensity": 0.12046631813049319,
+      "curve_multiplier": 0.06645366472548823,
+      "estimated_effective_intensity": 0.008005428315757799,
+      "sharpness": 0.6641029685735702
+    },
+    {
+      "time": 2.570666666666667,
+      "event_intensity": 0.16000000000000003,
+      "curve_multiplier": 0.04323077085165181,
+      "estimated_effective_intensity": 0.006916923336264292,
+      "sharpness": 0.8
+    },
+    {
+      "time": 2.6933333333333334,
+      "event_intensity": 0.1516550636291504,
+      "curve_multiplier": 0.03588984045214818,
+      "estimated_effective_intensity": 0.005442876037410589,
+      "sharpness": 0.7713142812252045
+    },
+    {
+      "time": 2.8213333333333335,
+      "event_intensity": 0.16000000000000003,
+      "curve_multiplier": 0.03224622518596096,
+      "estimated_effective_intensity": 0.005159396029753754,
+      "sharpness": 0.8
+    },
+    {
+      "time": 2.944,
+      "event_intensity": 0.12022712707519533,
+      "curve_multiplier": 0.05806504251650169,
+      "estimated_effective_intensity": 0.006980993245258069,
+      "sharpness": 0.8988007497787424
+    }
+  ],
+  "note": "Effective intensity is a parameter-product estimate, not a physical device measurement."
+}
