@@ -107,7 +107,7 @@ def caption_timeline(tokens, duration):
 def build_outputs(wav, directory, features, timeline):
     """Optional presentation stage, skipped entirely by /transcribe."""
     from mucap.render import audio_text_viz as visual
-    from .ahap_test import convert_wav
+    from .wav_to_ahap import convert_wav
     
     table = visual.note_table(visual.parse_notes(features.get("notes", [])))
     if not table.empty:
@@ -137,7 +137,7 @@ def build_outputs(wav, directory, features, timeline):
     
     # Phone recordings can be quiet; use the previous mobile RMS floor as reference.
     ahap_path, _ = convert_wav(
-        wav, Path(directory) / "recording.ahap", reference_rms=0.08)
+        wav, Path(directory) / "recording.ahap", reference_rms=0.25)
     ahap=json.loads(ahap_path.read_text(encoding="utf-8"))
     # haptic = caption.generate_haptic_output(str(wav), directory, features)
     return styled, ahap
