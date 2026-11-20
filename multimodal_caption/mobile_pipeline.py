@@ -137,7 +137,7 @@ def build_outputs(wav, directory, features, timeline):
     
     # Phone recordings can be quiet; use the previous mobile RMS floor as reference.
     ahap_path, _ = convert_wav(
-        wav, Path(directory) / "recording.ahap", reference_rms=0.25)
+        wav, Path(directory) / "recording.ahap", reference_rms=0.08)
     ahap=json.loads(ahap_path.read_text(encoding="utf-8"))
     # haptic = caption.generate_haptic_output(str(wav), directory, features)
     return styled, ahap
