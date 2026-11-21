@@ -1,0 +1,31 @@
+{
+  "file": "alarm/ttiroriro.wav",
+  "model": "gpt-audio-1.5",
+  "prompt": "의성어 표현을 활용해서 소리 그대로 전사해줘",
+  "started_at": "2026-11-21T08:52:53.522433+00:00",
+  "measurement": "Non-streaming API request to full response; excludes file reading and Base64 encoding; SDK retries disabled",
+  "runs": 1,
+  "status": "ok",
+  "latency_seconds": 1.935,
+  "response": "{\"부우우우\", \"삐릭삐릭\", \"삐빅삐빅\"} 같은 의성어로 표현할 수 있어요. 알람이 울리는 순간을 소리 그대로 나타낸 거죠.",
+  "finish_reason": "stop",
+  "usage": {
+    "completion_tokens": 50,
+    "prompt_tokens": 75,
+    "total_tokens": 125,
+    "completion_tokens_details": {
+      "accepted_prediction_tokens": 0,
+      "audio_tokens": 0,
+      "reasoning_tokens": 0,
+      "rejected_prediction_tokens": 0,
+      "text_tokens": 50
+    },
+    "prompt_tokens_details": {
+      "audio_tokens": 50,
+      "cache_write_tokens": null,
+      "cached_tokens": 0,
+      "image_tokens": 0,
+      "text_tokens": 25
+    }
+  }
+}

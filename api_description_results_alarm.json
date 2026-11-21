@@ -1,0 +1,82 @@
+{
+  "model": "gpt-audio-1.5",
+  "prompt": "\n첨부한 6개의 소리를 각각 다음 항목으로 정리해줘.\n1. 오디오 특징: 음높이, 음색, 강약 변화, 반복 간격, 지속 시간 등\n2. 카테고리\n3. 어떤 상황에서 나는 소리인지 또는 사람이 해야 할 행동\n4. 소리 그대로 전사(의성어 표현)\n\n마크다운이나 설명 없이 유효한 JSON 객체 하나만 반환해줘.\n최상위 키는 sounds이며, 소리 번호 순서의 배열을 넣어줘.\n각 항목에는 다음 키를 모두 포함해줘:\n- sound_id: 소리 번호(정수)\n- audio_features: 음향 특징을 설명하는 한국어 문자열\n- category: 카테고리 한국어 문자열\n- situation: 가능한 상황 및 불확실성을 설명하는 한국어 문자열\n- suggested_action: 조건부 행동 제안 한국어 문자열\n- onomatopoeia: 소리를 표현하는 한글 의성어 문자열\n직접 들리는 특징과 상황에 대한 추정을 구분해줘.\n상황이나 필요한 행동을 소리만으로 판단하기 어렵다면 명시해줘.\n",
+  "inputs": [
+    {
+      "sound_id": 1,
+      "file": "alarm/1-96890-A-37.wav"
+    },
+    {
+      "sound_id": 2,
+      "file": "alarm/5-223176-A-37.wav"
+    },
+    {
+      "sound_id": 3,
+      "file": "alarm/bbibbibbi.wav"
+    },
+    {
+      "sound_id": 4,
+      "file": "alarm/ppiippii.wav"
+    },
+    {
+      "sound_id": 5,
+      "file": "alarm/ppippippi.wav"
+    },
+    {
+      "sound_id": 6,
+      "file": "alarm/ttiroriro.wav"
+    }
+  ],
+  "finish_reason": "stop",
+  "status": "ok",
+  "sounds": [
+    {
+      "sound_id": 1,
+      "audio_features": "규칙적 반복 간격으로 울리는 중간 음높이의 전자음이며 음색은 날카롭고 강도가 일정함.",
+      "category": "알람/경고음",
+      "situation": "일반적으로 알람 시계나 타이머에서 나는 소리일 가능성이 큼.",
+      "suggested_action": "알람이라면 확인 후 끄거나 다음 행동 준비를 하면 좋음.",
+      "onomatopoeia": "삐-삐-삐-삐-"
+    },
+    {
+      "sound_id": 2,
+      "audio_features": "빠르고 일정한 반복 간격, 비교적 높은 음높이의 전자음, 강도가 강하고 날카로움.",
+      "category": "경보/비상경고",
+      "situation": "화재경보나 비상벨일 가능성이 있으나 정확한 상황은 소리만으로 확신하기 어려움.",
+      "suggested_action": "비상 상황일 경우 즉시 안전 지침에 따라 대피하거나 확인해야 함.",
+      "onomatopoeia": "삐삐삐삐삐"
+    },
+    {
+      "sound_id": 3,
+      "audio_features": "중간 정도 음높이의 전자음이 일정한 간격으로 반복되며 음량도 일정함.",
+      "category": "알림/경고음",
+      "situation": "전자기기 알림음이나 알람일 수 있음.",
+      "suggested_action": "해당 기기의 상태를 확인하고 필요 시 조치하는 것이 좋음.",
+      "onomatopoeia": "띠리릭 띠리릭"
+    },
+    {
+      "sound_id": 4,
+      "audio_features": "중저음의 전자음이 일정한 간격으로 울리며 음색은 부드럽고 강도 변화는 적음.",
+      "category": "전자기기 버튼음/알림음",
+      "situation": "전자레인지 완료음이나 출입문 잠금/해제음일 가능성이 있지만 확실하지 않음.",
+      "suggested_action": "소리가 울린 기기를 확인하고 필요한 경우 동작을 마무리하거나 확인함.",
+      "onomatopoeia": "삑- 삑- 삑-"
+    },
+    {
+      "sound_id": 5,
+      "audio_features": "낮은 음높이에서 시작해 약간 상승하는 전자음이 반복되고, 일정한 간격과 강도로 울림.",
+      "category": "기계경고/작업완료음",
+      "situation": "세탁기 완료음이나 기계 장비의 상태 알림일 수 있음.",
+      "suggested_action": "해당 장비 상태를 확인하고 다음 단계를 진행하면 좋음.",
+      "onomatopoeia": "삐-삐- 삐-"
+    },
+    {
+      "sound_id": 6,
+      "audio_features": "높은 음높이의 전자음이 짧은 간격으로 2회 연속 울리고 반복 패턴이 있음, 음량은 일정함.",
+      "category": "알림/버튼음",
+      "situation": "전자기기의 버튼 조작 확인음일 가능성이 있음.",
+      "suggested_action": "기기의 조작 결과를 확인하고 필요 시 추가 조치를 취함.",
+      "onomatopoeia": "삑삑- 삑삑-"
+    }
+  ]
+}
